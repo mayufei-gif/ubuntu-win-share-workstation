@@ -11,6 +11,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Bash syntax
         run: bash -n scripts/ubuntu/*.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Ubuntu NAS upload agent self test
+        run: |
+          python -m pip install -r scripts/ubuntu/requirements-nas-upload-agent.txt
+          python -m py_compile scripts/ubuntu/nas_upload_agent.py
+          python scripts/ubuntu/nas_upload_agent.py --self-test
       - name: PowerShell syntax
         shell: pwsh
         run: |
@@ -34,3 +42,10 @@ jobs:
       - name: Windows 7 command-script self test
         shell: cmd
         run: scripts\windows7\self-test.cmd
+      - name: Build Windows 7 customer release
+        shell: pwsh
+        run: scripts/windows/Build-Windows7Release.ps1 -Version 0.3.1 -OutputDirectory artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows7-client-ci
+          path: artifacts/*

@@ -15,6 +15,12 @@ call "%~dp0test-share-sync.cmd" --self-test
 if errorlevel 1 exit /b 1
 call "%~dp0git-workflow.cmd" --self-test
 if errorlevel 1 exit /b 1
+call "%~dp0win7-readiness.cmd" --self-test
+if errorlevel 1 exit /b 1
+call "%~dp0acceptance-test.cmd" --self-test
+if errorlevel 1 exit /b 1
+call "%~dp0collect-diagnostics.cmd" --self-test
+if errorlevel 1 exit /b 1
 
 echo WINDOWS7_CMD_SELF_TEST_OK
 exit /b 0

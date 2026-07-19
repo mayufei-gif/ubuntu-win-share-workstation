@@ -76,6 +76,9 @@ scripts/
     register-tasks.cmd           Hidden logon and low-frequency self-heal.
     test-share-sync.cmd          Win7-compatible SHA-256 and SSH proof.
     git-workflow.cmd             GitHub Desktop equivalent workflow.
+    win7-readiness.cmd           Win7 SP1 and dependency readiness check.
+    acceptance-test.cmd          End-to-end Win7 acceptance gate.
+    collect-diagnostics.cmd      Sanitized support report.
 skills/
   ubuntu-shared-workstation/
     SKILL.md                     Agent instruction card for shared folders.
@@ -105,3 +108,32 @@ Use semantic versions:
 - Major: changed defaults or breaking behavior.
 
 See [docs/release-process.md](docs/release-process.md).
+
+## Windows 7 Offline Bundle
+
+The customer-facing release asset is
+`UbuntuWinShare-Win7-0.3.1.exe`. Double-click it, select the local folder, and
+enter the Samba and NAS account settings. It installs itself for the current
+user, starts with Windows, retries quietly after network recovery, and prompts
+once before enabling Ubuntu-to-NAS uploads.
+
+A concise Chinese installation guide is included at
+`docs/Windows7_客户安装说明.txt`.
+
+After the first successful NAS upload, the Ubuntu agent has established SSH-key
+access and the application removes the saved NAS password from its local DPAPI
+configuration. Changing the temporary NAS password after that does not stop
+future key-based uploads.
+
+Upload jobs are written as unique files in the shared queue. This avoids
+same-name replacement locks on Samba and lets the Ubuntu agent retry a job
+after a temporary NAS or network failure.
+
+The legacy command-line ZIP can also be transferred to a Win7 machine before
+Git is installed. Run:
+
+```bat
+scripts\windows7\win7-readiness.cmd
+scripts\windows7\install-client.cmd \\192.168.x.x\ubuntu-win I: mana mana@192.168.x.x /home/mana/C/ubuntu-win 10
+scripts\windows7\acceptance-test.cmd
+```
