@@ -44,6 +44,25 @@ The Git for Windows package supplies `git.exe`, `git gui`, and `ssh.exe`.
 
 ## Installation
 
+For normal users, double-click the release executable:
+
+```text
+UbuntuWinShare-Win7-0.3.1.exe
+```
+
+The setup window asks for the local source folder, Ubuntu Samba share, Samba
+credentials, and NAS SSH account. Configuration is protected with Windows
+DPAPI for the current user. After the first successful upload, the client
+removes the NAS password because the Ubuntu agent has established SSH-key
+access.
+
+The tray application starts through the current-user Run key. Network failures
+are retried in the background no more often than the configured interval, with
+a 30-second minimum, and do not create PowerShell or console windows.
+
+The command-line compatibility scripts remain available for diagnostics and
+manual deployments.
+
 Run from an elevated Win7 command prompt for full automatic recovery:
 
 ```bat
@@ -79,6 +98,32 @@ Remove the tasks with:
 ```bat
 unregister-tasks.cmd
 ```
+
+## Acceptance Gate
+
+After installation, run:
+
+```bat
+win7-readiness.cmd
+acceptance-test.cmd
+```
+
+Completion requires:
+
+- `WIN7_READINESS_OK`
+- `SYNC_OK`
+- both scheduled tasks visible
+- GitHub remote query succeeds
+- `WIN7_ACCEPTANCE_OK`
+
+If a gate fails, collect a report:
+
+```bat
+collect-diagnostics.cmd
+```
+
+The report contains OS, network, task, mapping, Git, and SSH state. It does not
+collect passwords or private-key contents.
 
 ## Security Position
 
