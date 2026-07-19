@@ -9,10 +9,12 @@ assignees: ""
 ## Environment
 
 - Windows version:
+- Windows 7 SP1: yes/no
 - Ubuntu version:
 - SMB share path:
 - Drive letter:
 - Tailnet or network type:
+- Git client and version:
 
 ## Problem
 
@@ -27,5 +29,4 @@ assignees: ""
 
 
 ## Actual Result
-
 

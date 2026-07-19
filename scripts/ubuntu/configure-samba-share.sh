@@ -38,14 +38,38 @@ text = conf_path.read_text(encoding="utf-8", errors="ignore")
 lines = text.splitlines()
 out = []
 inside_target = False
+inside_global = False
+global_written = False
+global_settings = {
+    "server min protocol": "SMB2_02",
+    "server max protocol": "SMB3",
+    "ntlm auth": "ntlmv2-only",
+}
 for line in lines:
     stripped = line.strip()
     if stripped.startswith("[") and stripped.endswith("]"):
-        inside_target = stripped.lower() == f"[{share_name.lower()}]"
+        section = stripped[1:-1].strip().lower()
+        inside_target = section == share_name.lower()
+        inside_global = section == "global"
         if inside_target:
+            continue
+        out.append(line)
+        if inside_global:
+            for key, value in global_settings.items():
+                out.append(f"   {key} = {value}")
+            global_written = True
+        continue
+    if inside_global and "=" in stripped:
+        key = stripped.split("=", 1)[0].strip().lower()
+        if key in global_settings:
             continue
     if not inside_target:
         out.append(line)
+
+if not global_written:
+    out = ["[global]"] + [
+        f"   {key} = {value}" for key, value in global_settings.items()
+    ] + [""] + out
 
 if out and out[-1].strip():
     out.append("")

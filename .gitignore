@@ -29,3 +29,6 @@ Thumbs.db
 desktop.ini
 .idea/
 .vscode/
+
+# Windows 7 client configuration
+scripts/windows7/share-config.local.cmd

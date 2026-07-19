@@ -27,6 +27,15 @@ visibility.
 bash scripts/ubuntu/verify-share-path.sh /home/mana/C/ubuntu-win
 ```
 
+## Windows 7 Command
+
+```bat
+scripts\windows7\test-share-sync.cmd
+```
+
+The Win7 script uses built-in `certutil` for SHA-256 and the `ssh.exe` bundled
+with Git for Windows for the Ubuntu-side hash.
+
 ## Interpreting Results
 
 - Matching hashes mean the share is working.

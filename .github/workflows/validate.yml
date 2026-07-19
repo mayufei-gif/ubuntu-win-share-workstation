@@ -26,3 +26,11 @@ jobs:
             }
           }
           if ($errorsFound) { exit 1 }
+
+  windows7-cmd:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Windows 7 command-script self test
+        shell: cmd
+        run: scripts\windows7\self-test.cmd

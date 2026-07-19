@@ -2,6 +2,16 @@
 
 This repository is designed for GitHub Desktop users.
 
+Windows 7 cannot run a current GitHub Desktop release. On Windows 7, install
+the last compatible Git for Windows release and use:
+
+```bat
+scripts\windows7\git-workflow.cmd gui
+scripts\windows7\git-workflow.cmd pull
+scripts\windows7\git-workflow.cmd branch fix/example
+scripts\windows7\git-workflow.cmd publish
+```
+
 ## First Setup
 
 1. Open GitHub Desktop.

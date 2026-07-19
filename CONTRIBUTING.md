@@ -17,6 +17,10 @@ Use small branches and keep environment-specific data out of Git.
    bash -n scripts/ubuntu/*.sh
    ```
 
+   ```bat
+   scripts\windows7\self-test.cmd
+   ```
+
 5. Commit with a clear message.
 6. Push and open a pull request.
 
@@ -28,3 +32,5 @@ Use small branches and keep environment-specific data out of Git.
 - Do not add high-frequency scheduled tasks by default.
 - Prefer parameters and examples over machine-specific constants.
 - Keep scripts idempotent so they can be rerun safely.
+- Win7 scripts must use commands available on Windows 7 SP1.
+- Do not enable SMB1 or NTLMv1 for compatibility.
