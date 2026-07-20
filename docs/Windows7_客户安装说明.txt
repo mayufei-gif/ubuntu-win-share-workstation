@@ -1,4 +1,4 @@
-Ubuntu Win Share 0.3.1
+Ubuntu Win Share 0.3.2 验收候选版
 
 系统要求
 
@@ -6,10 +6,22 @@ Ubuntu Win Share 0.3.1
 2. 已启用 .NET Framework 3.5。
 3. 电脑能够访问 Ubuntu Samba 地址。
 4. Ubuntu 端 NAS 上传服务已经安装并运行。
+5. 安装包会检查系统版本；在 Windows 8、10、11 上不会安装。
+
+本机不是 Windows 7 时不要运行此安装包；它不会安装或创建映射。
+
+网络说明
+
+- 当前 Tailscale Windows 客户端不直接支持 Windows 7。
+- Win7 与 Ubuntu 在同一局域网时，请填写 Ubuntu 的局域网 UNC 地址。
+- Win7 在异地时，需要由另一台受支持设备提供 Tailscale 子网路由或网关，
+  让 Win7 能访问 Ubuntu 的共享地址；不要在 Win7 上安装来历不明的旧版
+  Tailscale 客户端。
+- 安装前可在 Win7 资源管理器地址栏打开 \\Ubuntu地址\ubuntu-win 验证连通。
 
 安装
 
-1. 双击 UbuntuWinShare-Win7-0.3.1.exe。
+1. 双击 UbuntuWinShare-Win7-0.3.2.exe。
 2. 选择需要同步的 Windows 本地文件夹。
 3. 输入同步名称，例如 Documents。
 4. 输入 Ubuntu 共享地址，例如 \\192.168.x.x\ubuntu-win。
@@ -17,6 +29,9 @@ Ubuntu Win Share 0.3.1
 6. 输入 Samba 用户名和密码。
 7. 输入 NAS 的 IP 或 DNS、SSH 用户名、临时密码和账号内目标目录。
 8. 点击“安装并开始”。
+
+如果 Ubuntu 上传代理已经为同一个 NAS 账号建立 SSH 密钥，后续 Win7
+电脑的 NAS 密码可以留空。
 
 运行方式
 
@@ -29,10 +44,14 @@ Ubuntu Win Share 0.3.1
 状态与卸载
 
 - 右键系统托盘中的 Ubuntu Win Share 图标可以立即同步、上传、打开目录、查看日志或修改设置。
-- 在托盘菜单中点击“卸载”，不会删除 Ubuntu 或 NAS 上已经同步的文件。
+- 双击 UbuntuWinShare-Win7-0.3.2-Uninstall.exe，或在托盘菜单、控制面板中点击“卸载”。
+- 卸载只清理这台 Windows 7 电脑上的客户端、配置、开机启动项、对应盘符映射和旧恢复任务。
+- 卸载不会删除 Windows 原始文件、Ubuntu 共享文件或 NAS 上已经同步的文件。
 
 注意
 
 - 不要启用 SMB1 或 NTLMv1。
 - Windows 7 已停止官方安全支持，建议只在受控的 NAS 局域网或私有网络中使用。
 - 本安装包未使用商业代码签名证书。请先核对同目录 SHA-256 文件。
+- 当前是 Win7 SP1 实机验收候选包。安装、断网恢复和卸载全部验证通过后，
+  才会发布正式 v0.3.2。

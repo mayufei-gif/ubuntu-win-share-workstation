@@ -1,8 +1,8 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 
-[assembly: AssemblyTitle("Ubuntu Win Share")]
-[assembly: AssemblyDescription("Windows 7 client for Ubuntu SMB sync and NAS upload")]
+[assembly: AssemblyTitle("Ubuntu Win Share Uninstaller")]
+[assembly: AssemblyDescription("Windows 7 uninstaller for Ubuntu Win Share")]
 [assembly: AssemblyCompany("Ubuntu Win Share Workstation")]
 [assembly: AssemblyProduct("Ubuntu Win Share")]
 [assembly: AssemblyCopyright("Copyright 2026")]

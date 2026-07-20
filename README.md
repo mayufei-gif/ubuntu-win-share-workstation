@@ -69,6 +69,7 @@ scripts/
     Register-UbuntuWinShareTask.ps1
                                   Optional hidden logon remount task.
     Test-UbuntuWinShareSync.ps1  Windows-to-Ubuntu sync proof.
+    Test-Windows7SameNasE2E.ps1  Non-installing two-round three-end verifier.
   windows7/
     install-client.cmd           Create local configuration and register tasks.
     map-share.cmd                Interactive first-time SMB mapping.
@@ -109,13 +110,30 @@ Use semantic versions:
 
 See [docs/release-process.md](docs/release-process.md).
 
-## Windows 7 Offline Bundle
+## Windows 7 Release Candidate
 
-The customer-facing release asset is
-`UbuntuWinShare-Win7-0.3.1.exe`. Double-click it, select the local folder, and
+The current customer-test candidate is
+`UbuntuWinShare-Win7-0.3.2.exe`. Double-click it, select the local folder, and
 enter the Samba and NAS account settings. It installs itself for the current
 user, starts with Windows, retries quietly after network recovery, and prompts
 once before enabling Ubuntu-to-NAS uploads.
+
+Normal installation is gated to Windows 7 SP1. On Windows 8, 10, or 11, the
+customer executable exits without installing; non-destructive build and
+integration self-test modes remain available to maintainers.
+
+The maintainer-only OS probe is:
+
+```bat
+UbuntuWinShare-Win7-0.3.2.exe --os-probe --result os-probe.txt
+```
+
+It does not install, map a drive, or start the tray client.
+
+The same customer package includes
+`UbuntuWinShare-Win7-0.3.2-Uninstall.exe` for a separate double-click
+uninstall. It removes only the Win7-side client state and leaves the original
+Windows folder, Ubuntu share data, and NAS data intact.
 
 A concise Chinese installation guide is included at
 `docs/Windows7_客户安装说明.txt`.
@@ -137,3 +155,23 @@ scripts\windows7\win7-readiness.cmd
 scripts\windows7\install-client.cmd \\192.168.x.x\ubuntu-win I: mana mana@192.168.x.x /home/mana/C/ubuntu-win 10
 scripts\windows7\acceptance-test.cmd
 ```
+
+Maintainers can verify the same executable without installing it on the build
+machine:
+
+```powershell
+.\scripts\windows\Test-Windows7SameNasE2E.ps1 `
+  -ClientExe .\artifacts\UbuntuWinShare-Win7-0.3.2.exe `
+  -Share "\\<Ubuntu-IP>\ubuntu-win" `
+  -NasHost "<NAS-IP-or-DNS>" `
+  -NasUser "<NAS SSH user>"
+```
+
+Current Tailscale for Windows releases do not run on Windows 7. A remote Win7
+client must therefore reach the Ubuntu Samba address through a supported
+Tailscale subnet router or gateway, or use an Ubuntu LAN address that is
+directly routable from that client. The installer accepts either reachable
+UNC form.
+
+Do not tag or publish `v0.3.2` until the real Windows 7 SP1 acceptance
+checklist passes.

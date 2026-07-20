@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$Version = "0.3.1",
+  [string]$Version = "0.3.2",
   [string]$OutputDirectory = "artifacts"
 )
 
@@ -12,6 +12,9 @@ $appBuilder = Join-Path $PSScriptRoot "Build-Windows7App.ps1"
 $exeName = "UbuntuWinShare-Win7-$Version.exe"
 $exePath = Join-Path $outputRoot $exeName
 $exeHashPath = "$exePath.sha256"
+$uninstallerName = "UbuntuWinShare-Win7-$Version-Uninstall.exe"
+$uninstallerPath = Join-Path $outputRoot $uninstallerName
+$uninstallerHashPath = "$uninstallerPath.sha256"
 $guidePath = Join-Path $repositoryRoot "docs\Windows7_客户安装说明.txt"
 $licensePath = Join-Path $repositoryRoot "LICENSE"
 $stagingRoot = Join-Path $env:TEMP (
@@ -26,6 +29,8 @@ $zipHashPath = "$zipPath.sha256"
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 Copy-Item -LiteralPath $exePath -Destination $packageRoot
 Copy-Item -LiteralPath $exeHashPath -Destination $packageRoot
+Copy-Item -LiteralPath $uninstallerPath -Destination $packageRoot
+Copy-Item -LiteralPath $uninstallerHashPath -Destination $packageRoot
 Copy-Item -LiteralPath $guidePath -Destination $packageRoot
 Copy-Item -LiteralPath $licensePath -Destination $packageRoot
 

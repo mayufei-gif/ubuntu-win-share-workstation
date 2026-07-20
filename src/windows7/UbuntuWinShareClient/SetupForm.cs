@@ -8,6 +8,8 @@ namespace UbuntuWinShareClient
     internal sealed class SetupForm : Form
     {
         private readonly AppConfig _existing;
+        private readonly System.Threading.EventWaitHandle _exitEvent;
+        private readonly Timer _exitTimer;
         private TextBox _source;
         private TextBox _profile;
         private TextBox _shareUnc;
@@ -24,11 +26,39 @@ namespace UbuntuWinShareClient
 
         public AppConfig SavedConfig { get; private set; }
 
-        public SetupForm(AppConfig existing)
+        public SetupForm(
+            AppConfig existing,
+            System.Threading.EventWaitHandle exitEvent)
         {
             _existing = existing;
+            _exitEvent = exitEvent;
             BuildUi();
             LoadValues(existing);
+
+            _exitTimer = new Timer();
+            _exitTimer.Interval = 500;
+            _exitTimer.Tick += new EventHandler(ExitTimerTick);
+            _exitTimer.Start();
+        }
+
+        private void ExitTimerTick(object sender, EventArgs e)
+        {
+            if (_exitEvent != null &&
+                _exitEvent.WaitOne(0, false))
+            {
+                DialogResult = DialogResult.Cancel;
+                Close();
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && _exitTimer != null)
+            {
+                _exitTimer.Stop();
+                _exitTimer.Dispose();
+            }
+            base.Dispose(disposing);
         }
 
         private void BuildUi()

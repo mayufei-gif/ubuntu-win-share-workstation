@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.3.2 - Unreleased release candidate
+
+- Added a separate double-click Windows 7 uninstaller executable.
+- Embedded the uninstaller in the installer so tray and Control Panel removal
+  use the same cleanup path.
+- Added a named exit signal so the running tray client shuts down before its
+  installed files are removed.
+- Added a path-scoped Win7 process-tree fallback for removing older installed
+  clients without leaving their `robocopy` child process running.
+- Limited uninstall cleanup to local client state, the configured matching
+  drive mapping, and the two legacy Win7 recovery tasks.
+- Added non-destructive self-tests for delete-path and drive-mapping safety.
+- Added a Windows 7 SP1 runtime gate so the customer installer cannot
+  accidentally install on Windows 8, 10, or 11 build machines.
+- Replaced unbounded synchronization with a supervised worker that terminates
+  its `robocopy` process tree after a five-minute timeout.
+- Added atomic DPAPI configuration writes, a readable backup from the first
+  save, and automatic recovery from a corrupt primary configuration.
+- Made the uninstaller read the backup configuration before deciding whether
+  a mapped drive belongs to this application.
+- Ensured the Ubuntu NAS upload agent has exactly one startup owner: user
+  systemd when linger is enabled, otherwise a locked cron watchdog.
+- Added bounded NAS SSH reconnection for transient Paramiko session failures,
+  including `No existing session`, without retrying authentication rejection.
+- Made agent installation wait for and verify exactly one active upload agent,
+  plus one watchdog when the cron fallback owns startup.
+- Added a repeatable two-round Windows-to-Ubuntu-to-NAS SHA-256 E2E verifier.
+
+This version must remain untagged until installation, logon startup, network
+recovery, no-flash behavior, password rotation, and uninstall retention pass on
+a real Windows 7 SP1 machine.
+
 ## 0.3.1 - 2026-07-19
 
 - Throttled offline remount attempts so a disconnected share cannot trigger a

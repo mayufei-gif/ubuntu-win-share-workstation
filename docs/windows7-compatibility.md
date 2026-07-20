@@ -47,7 +47,7 @@ The Git for Windows package supplies `git.exe`, `git gui`, and `ssh.exe`.
 For normal users, double-click the release executable:
 
 ```text
-UbuntuWinShare-Win7-0.3.1.exe
+UbuntuWinShare-Win7-0.3.2.exe
 ```
 
 The setup window asks for the local source folder, Ubuntu Samba share, Samba
@@ -60,8 +60,28 @@ The tray application starts through the current-user Run key. Network failures
 are retried in the background no more often than the configured interval, with
 a 30-second minimum, and do not create PowerShell or console windows.
 
+The customer package also contains
+`UbuntuWinShare-Win7-0.3.2-Uninstall.exe`. Double-click it on the Win7 client
+to remove only the local application, configuration, startup entry, matching
+mapped drive, and legacy recovery tasks. It does not delete the source folder,
+Ubuntu share data, or NAS data.
+
 The command-line compatibility scripts remain available for diagnostics and
 manual deployments.
+
+## Tailscale network prerequisite
+
+Current Tailscale for Windows releases require Windows 10 or newer. Windows 7
+clients cannot be treated as native tailnet nodes. Use one of these supported
+network layouts:
+
+- Connect Win7 directly to the Ubuntu Samba service over a trusted LAN.
+- Put a supported Tailscale device on the Win7 LAN and route the Ubuntu
+  destination through it.
+- Expose only the required private SMB route through a managed VPN gateway.
+
+The Win7 setup accepts any reachable UNC address. Do not distribute an
+unsupported legacy Tailscale client as part of this package.
 
 Run from an elevated Win7 command prompt for full automatic recovery:
 
@@ -127,7 +147,7 @@ collect passwords or private-key contents.
 
 ## Security Position
 
-Windows 7 and its compatible Git/Tailscale clients are no longer receiving
-normal platform support. Keep this client isolated on the NAS/LAN, restrict
-the Samba user to the required share, and do not expose SMB port 445 to the
-public internet.
+Windows 7 and its compatible Git clients are no longer receiving normal
+platform support. Keep this client isolated on the NAS/LAN, restrict the Samba
+user to the required share, and do not expose SMB port 445 to the public
+internet.

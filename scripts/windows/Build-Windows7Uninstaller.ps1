@@ -7,12 +7,10 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$sourceRoot = Join-Path $repositoryRoot "src\windows7\UbuntuWinShareClient"
+$sourceRoot = Join-Path $repositoryRoot "src\windows7\UbuntuWinShareUninstaller"
 $outputRoot = Join-Path $repositoryRoot $OutputDirectory
-$outputPath = Join-Path $outputRoot "UbuntuWinShare-Win7-$Version.exe"
-$selfTestResult = Join-Path $outputRoot "UbuntuWinShare-Win7-$Version.self-test.txt"
-$uninstallerBuilder = Join-Path $PSScriptRoot "Build-Windows7Uninstaller.ps1"
-$uninstallerPath = Join-Path $outputRoot "UbuntuWinShare-Win7-$Version-Uninstall.exe"
+$outputPath = Join-Path $outputRoot "UbuntuWinShare-Win7-$Version-Uninstall.exe"
+$selfTestResult = Join-Path $outputRoot "UbuntuWinShare-Win7-$Version-Uninstall.self-test.txt"
 $compilerCandidates = @(
   (Join-Path $env:WINDIR "Microsoft.NET\Framework\v3.5\csc.exe"),
   (Join-Path $env:WINDIR "Microsoft.NET\Framework64\v3.5\csc.exe")
@@ -26,15 +24,10 @@ if (-not $compiler) {
   throw ".NET Framework 3.5 C# compiler was not found."
 }
 
-& $uninstallerBuilder -Version $Version -OutputDirectory $OutputDirectory
-if (-not (Test-Path -LiteralPath $uninstallerPath)) {
-  throw "Windows 7 uninstaller output is missing: $uninstallerPath"
-}
-
 $assemblyInfo = Get-Content -LiteralPath $assemblyInfoPath -Raw
 $expectedFileVersion = [Regex]::Escape($Version + ".0")
 if ($assemblyInfo -notmatch "AssemblyFileVersion\(`"$expectedFileVersion`"\)") {
-  throw "AssemblyInfo.cs does not match requested release version $Version."
+  throw "Uninstaller AssemblyInfo.cs does not match requested release version $Version."
 }
 
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
@@ -57,10 +50,8 @@ $arguments = @(
   "/codepage:65001",
   "/out:$outputPath",
   "/win32manifest:$(Join-Path $sourceRoot 'app.manifest')",
-  "/resource:$uninstallerPath,UbuntuWinShareClient.EmbeddedUninstaller",
   "/reference:System.dll",
   "/reference:System.Core.dll",
-  "/reference:System.Drawing.dll",
   "/reference:System.Security.dll",
   "/reference:System.Windows.Forms.dll",
   "/reference:System.Xml.dll"
@@ -68,35 +59,7 @@ $arguments = @(
 
 & $compiler $arguments
 if ($LASTEXITCODE -ne 0) {
-  throw "Windows 7 client compilation failed with exit code $LASTEXITCODE."
-}
-
-$assembly = [Reflection.Assembly]::LoadFile($outputPath)
-$resource = $assembly.GetManifestResourceStream(
-  "UbuntuWinShareClient.EmbeddedUninstaller")
-if (-not $resource) {
-  throw "The compiled client does not contain the embedded uninstaller."
-}
-try {
-  $sha = [Security.Cryptography.SHA256]::Create()
-  try {
-    $embeddedHash = (
-      $sha.ComputeHash($resource) |
-        ForEach-Object { $_.ToString("x2") }
-    ) -join ""
-  }
-  finally {
-    $sha.Dispose()
-  }
-}
-finally {
-  $resource.Dispose()
-}
-$standaloneHash = (
-  Get-FileHash -LiteralPath $uninstallerPath -Algorithm SHA256
-).Hash.ToLowerInvariant()
-if ($embeddedHash -ne $standaloneHash) {
-  throw "The embedded and standalone uninstallers do not match."
+  throw "Windows 7 uninstaller compilation failed with exit code $LASTEXITCODE."
 }
 
 $process = Start-Process `
@@ -106,20 +69,21 @@ $process = Start-Process `
   -PassThru `
   -Wait
 if ($process.ExitCode -ne 0) {
-  throw "Windows 7 client self-test failed with exit code $($process.ExitCode)."
+  throw "Windows 7 uninstaller self-test failed with exit code $($process.ExitCode)."
 }
 
 $selfTestText = Get-Content -LiteralPath $selfTestResult -Raw
-if ($selfTestText -notmatch "WIN7_CLIENT_SELF_TEST_OK") {
-  throw "Windows 7 client self-test marker is missing."
+if ($selfTestText -notmatch "WIN7_UNINSTALLER_SELF_TEST_OK") {
+  throw "Windows 7 uninstaller self-test marker is missing."
 }
 
-$hash = (Get-FileHash -LiteralPath $outputPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$hash = (
+  Get-FileHash -LiteralPath $outputPath -Algorithm SHA256
+).Hash.ToLowerInvariant()
 $hashPath = "$outputPath.sha256"
 [IO.File]::WriteAllText(
   $hashPath,
   "$hash  $([IO.Path]::GetFileName($outputPath))`n",
   [Text.UTF8Encoding]::new($false))
 
-Write-Host "WIN7_APP_BUILD_OK path=$outputPath sha256=$hash"
-Write-Host "WIN7_EMBEDDED_UNINSTALLER_OK sha256=$embeddedHash"
+Write-Host "WIN7_UNINSTALLER_BUILD_OK path=$outputPath sha256=$hash"
