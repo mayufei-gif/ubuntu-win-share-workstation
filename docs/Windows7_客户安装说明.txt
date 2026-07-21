@@ -1,9 +1,10 @@
-Ubuntu Win Share 0.3.2 验收候选版
+﻿Ubuntu Win Share 0.3.2 验收候选版
 
 系统要求
 
 1. Windows 7 SP1。
-2. 已启用 .NET Framework 3.5。
+2. .NET Framework 3.5.1 可以由 Setup 自动检查和修复；缺失时需要确认一次
+   Windows 管理员 UAC 提示。
 3. 电脑能够访问 Ubuntu Samba 地址。
 4. Ubuntu 端 NAS 上传服务已经安装并运行。
 5. 安装包会检查系统版本；在 Windows 8、10、11 上不会安装。
@@ -17,11 +18,16 @@ Ubuntu Win Share 0.3.2 验收候选版
 - Win7 在异地时，需要由另一台受支持设备提供 Tailscale 子网路由或网关，
   让 Win7 能访问 Ubuntu 的共享地址；不要在 Win7 上安装来历不明的旧版
   Tailscale 客户端。
+- 当尾网路由已经让 Win7 可达当前 Ubuntu 虚拟机时，Ubuntu 共享 UNC 填：
+
+  \\100.95.140.72\ubuntu-win
+
+  这不是网页地址；必须保留开头的两个反斜杠和末尾共享名。
 - 安装前可在 Win7 资源管理器地址栏打开 \\Ubuntu地址\ubuntu-win 验证连通。
 
 安装
 
-1. 双击 UbuntuWinShare-Win7-0.3.2.exe。
+1. 双击 UbuntuWinShare-Win7-0.3.2-Setup.exe。
 2. 选择需要同步的 Windows 本地文件夹。
 3. 输入同步名称，例如 Documents。
 4. 输入 Ubuntu 共享地址，例如 \\192.168.x.x\ubuntu-win。
@@ -29,6 +35,10 @@ Ubuntu Win Share 0.3.2 验收候选版
 6. 输入 Samba 用户名和密码。
 7. 输入 NAS 的 IP 或 DNS、SSH 用户名、临时密码和账号内目标目录。
 8. 点击“安装并开始”。
+
+如果 Setup 报告 Windows 组件修复未完成，打开同一客户包的“人工兜底”目录，
+双击“安装_管理员.cmd”。该脚本只修复 .NET 3.5.1 和 Workstation 服务，
+然后启动同包的客户端；它不保存 Samba 或 NAS 密码。
 
 如果 Ubuntu 上传代理已经为同一个 NAS 账号建立 SSH 密钥，后续 Win7
 电脑的 NAS 密码可以留空。

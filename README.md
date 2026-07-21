@@ -113,35 +113,46 @@ See [docs/release-process.md](docs/release-process.md).
 ## Windows 7 Release Candidate
 
 The current customer-test candidate is
-`UbuntuWinShare-Win7-0.3.2.exe`. Double-click it, select the local folder, and
-enter the Samba and NAS account settings. It installs itself for the current
-user, starts with Windows, retries quietly after network recovery, and prompts
-once before enabling Ubuntu-to-NAS uploads.
+`UbuntuWinShare-Win7-0.3.2-Setup.exe`. Double-click it, select the local
+folder, and enter the Samba and NAS account settings. The native x86 Setup
+checks .NET Framework 3.5.1, the Workstation service, and `robocopy.exe`
+before starting the managed client for the current user. It starts with
+Windows, retries quietly after network recovery, and prompts once before
+enabling Ubuntu-to-NAS uploads.
 
 Normal installation is gated to Windows 7 SP1. On Windows 8, 10, or 11, the
-customer executable exits without installing; non-destructive build and
-integration self-test modes remain available to maintainers.
+Setup exits without installing; non-destructive build and integration self-test
+modes remain available to maintainers.
 
-The maintainer-only OS probe is:
+The customer Setup self-test is:
 
 ```bat
-UbuntuWinShare-Win7-0.3.2.exe --os-probe --result os-probe.txt
+UbuntuWinShare-Win7-0.3.2-Setup.exe --self-test --result setup-self-test.txt
 ```
 
-It does not install, map a drive, or start the tray client.
+It does not install, map a drive, start the tray client, or request elevation.
 
 The same customer package includes
 `UbuntuWinShare-Win7-0.3.2-Uninstall.exe` for a separate double-click
 uninstall. It removes only the Win7-side client state and leaves the original
 Windows folder, Ubuntu share data, and NAS data intact.
 
+If .NET Framework 3.5.1 or the Workstation service cannot be repaired by
+Setup, run `人工兜底\安装_管理员.cmd` from the same customer package. It repairs
+only those system prerequisites, then launches the contained client.
+
+The package also includes `Windows7_实机验收清单.txt`. Complete every item on
+an actual Windows 7 SP1 computer before promoting this release candidate.
+
 A concise Chinese installation guide is included at
 `docs/Windows7_客户安装说明.txt`.
 
 After the first successful NAS upload, the Ubuntu agent has established SSH-key
 access and the application removes the saved NAS password from its local DPAPI
-configuration. Changing the temporary NAS password after that does not stop
-future key-based uploads.
+primary and backup configuration files. Changing the temporary NAS password
+after that does not stop future key-based uploads. Changing the source folder,
+share, profile, or NAS destination resets the applicable synchronization and
+upload confirmation state before the new settings are used.
 
 Upload jobs are written as unique files in the shared queue. This avoids
 same-name replacement locks on Samba and lets the Ubuntu agent retry a job
@@ -170,8 +181,9 @@ machine:
 Current Tailscale for Windows releases do not run on Windows 7. A remote Win7
 client must therefore reach the Ubuntu Samba address through a supported
 Tailscale subnet router or gateway, or use an Ubuntu LAN address that is
-directly routable from that client. The installer accepts either reachable
-UNC form.
+directly routable from that client. When the supplied tailnet route reaches
+this Ubuntu VM, enter `\\100.95.140.72\ubuntu-win` as the share UNC. The
+installer accepts either reachable UNC form.
 
 Do not tag or publish `v0.3.2` until the real Windows 7 SP1 acceptance
 checklist passes.

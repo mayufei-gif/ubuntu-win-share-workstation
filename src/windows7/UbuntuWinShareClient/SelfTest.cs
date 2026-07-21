@@ -4,6 +4,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Xml;
 using System.Xml.Serialization;
 
 namespace UbuntuWinShareClient
@@ -24,9 +25,11 @@ namespace UbuntuWinShareClient
                 TestRobocopy(root);
                 TestProcessSupervisor(root);
                 TestSyncWorkerProtocol(root);
+                TestSecureXml(root);
                 TestSyncSchedule();
                 TestRobocopyExitCodes();
-                TestCredentialLifecycle();
+                TestCredentialLifecycle(root);
+                TestConfigLifecycle();
                 TestConfigClone();
                 TestQueuePublish(root);
                 TestUninstallerContract();
@@ -352,7 +355,7 @@ namespace UbuntuWinShareClient
             }
         }
 
-        private static void TestCredentialLifecycle()
+        private static void TestCredentialLifecycle(string root)
         {
             AppConfig config = new AppConfig();
             config.NasPassword = "temporary-password";
@@ -370,6 +373,149 @@ namespace UbuntuWinShareClient
             {
                 throw new InvalidOperationException(
                     "NAS password cleanup was not idempotent.");
+            }
+
+            string configPath = Path.Combine(
+                root,
+                "credential-config.dat");
+            string backupPath = configPath + ".bak";
+            AppConfig persisted = new AppConfig();
+            persisted.ProfileName = "credential-test";
+            persisted.NasPassword = "old-temporary-password";
+            ConfigStore.SaveToFiles(
+                persisted,
+                configPath,
+                backupPath);
+            persisted.NasPassword = "";
+            ConfigStore.SaveToFiles(
+                persisted,
+                configPath,
+                backupPath);
+
+            if (ConfigStore.NeedsNasPasswordSanitization(configPath) ||
+                !ConfigStore.NeedsNasPasswordSanitization(backupPath))
+            {
+                throw new InvalidOperationException(
+                    "Stale backup NAS password was not detected.");
+            }
+            if (CredentialLifecycle.ClearNasPasswordAfterSuccessfulUpload(
+                    persisted))
+            {
+                throw new InvalidOperationException(
+                    "Already-cleared NAS password unexpectedly reported a change.");
+            }
+            ConfigStore.SaveAfterNasPasswordRemovalToFiles(
+                persisted,
+                configPath,
+                backupPath);
+
+            AppConfig current = ConfigStore.LoadFromFiles(
+                configPath,
+                configPath + ".missing",
+                false);
+            AppConfig backup = ConfigStore.LoadFromFiles(
+                backupPath,
+                backupPath + ".missing",
+                false);
+            if (current == null ||
+                backup == null ||
+                !Text.IsBlank(current.NasPassword) ||
+                !Text.IsBlank(backup.NasPassword))
+            {
+                throw new InvalidOperationException(
+                    "NAS password remained in the current or backup configuration.");
+            }
+            if (ConfigStore.NeedsNasPasswordSanitization(configPath) ||
+                ConfigStore.NeedsNasPasswordSanitization(backupPath))
+            {
+                throw new InvalidOperationException(
+                    "Sanitized configuration copies still require rewriting.");
+            }
+        }
+
+        private static void TestConfigLifecycle()
+        {
+            AppConfig original = ConfigWithUploadState();
+
+            AppConfig unchanged = original.Clone();
+            ConfigLifecycle.ApplySettingsChange(original, unchanged);
+            AssertUploadStatePreserved(unchanged);
+
+            AppConfig nasChanged = original.Clone();
+            nasChanged.NasHost = "nas-new.example";
+            ConfigLifecycle.ApplySettingsChange(original, nasChanged);
+            if (!nasChanged.InitialSyncCompleted ||
+                nasChanged.UploadPromptShown ||
+                nasChanged.AutoUploadEnabled ||
+                nasChanged.UploadPending ||
+                !Text.IsBlank(nasChanged.LastQueuedJobId) ||
+                !Text.IsBlank(nasChanged.LastQueuedUtc) ||
+                nasChanged.UploadPublicKeyFingerprint != "trusted-key")
+            {
+                throw new InvalidOperationException(
+                    "NAS target change did not reset only upload authorization state.");
+            }
+
+            AppConfig sourceChanged = original.Clone();
+            sourceChanged.SourceFolder = "C:\\new-source";
+            ConfigLifecycle.ApplySettingsChange(original, sourceChanged);
+            if (sourceChanged.InitialSyncCompleted ||
+                sourceChanged.UploadPromptShown ||
+                sourceChanged.AutoUploadEnabled ||
+                sourceChanged.UploadPending ||
+                sourceChanged.UploadPublicKeyFingerprint != "trusted-key")
+            {
+                throw new InvalidOperationException(
+                    "Sync identity change did not reset sync and upload state.");
+            }
+
+            AppConfig shareChanged = original.Clone();
+            shareChanged.ShareUnc = "\\\\server-two\\ubuntu-win";
+            ConfigLifecycle.ApplySettingsChange(original, shareChanged);
+            if (shareChanged.InitialSyncCompleted ||
+                shareChanged.UploadPromptShown ||
+                shareChanged.AutoUploadEnabled ||
+                shareChanged.UploadPending ||
+                !Text.IsBlank(shareChanged.UploadPublicKeyFingerprint))
+            {
+                throw new InvalidOperationException(
+                    "Share change did not reset trust and synchronization state.");
+            }
+        }
+
+        private static AppConfig ConfigWithUploadState()
+        {
+            AppConfig config = new AppConfig();
+            config.SourceFolder = "C:\\source";
+            config.ProfileName = "profile";
+            config.ShareUnc = "\\\\server-one\\ubuntu-win";
+            config.NasHost = "nas.example";
+            config.NasPort = 22;
+            config.NasUsername = "customer";
+            config.NasPassword = "temporary-password";
+            config.NasRemoteRoot = "Win7Uploads";
+            config.InitialSyncCompleted = true;
+            config.UploadPromptShown = true;
+            config.AutoUploadEnabled = true;
+            config.UploadPending = true;
+            config.UploadPublicKeyFingerprint = "trusted-key";
+            config.LastQueuedJobId = "job";
+            config.LastQueuedUtc = "2026-07-20T00:00:00Z";
+            return config;
+        }
+
+        private static void AssertUploadStatePreserved(AppConfig config)
+        {
+            if (!config.InitialSyncCompleted ||
+                !config.UploadPromptShown ||
+                !config.AutoUploadEnabled ||
+                !config.UploadPending ||
+                config.UploadPublicKeyFingerprint != "trusted-key" ||
+                config.LastQueuedJobId != "job" ||
+                config.LastQueuedUtc != "2026-07-20T00:00:00Z")
+            {
+                throw new InvalidOperationException(
+                    "Unchanged settings unexpectedly reset runtime state.");
             }
         }
 
@@ -604,6 +750,44 @@ namespace UbuntuWinShareClient
             {
                 throw new InvalidOperationException(
                     "Sync worker result protocol round trip failed.");
+            }
+        }
+
+        private static void TestSecureXml(string root)
+        {
+            string secretPath = Path.Combine(root, "xml-secret.txt");
+            string xmlPath = Path.Combine(root, "unsafe-result.xml");
+            File.WriteAllText(
+                secretPath,
+                "DO_NOT_READ",
+                Encoding.ASCII);
+            string uri = new Uri(secretPath).AbsoluteUri;
+            string xml =
+                "<?xml version=\"1.0\"?>" +
+                "<!DOCTYPE SyncResult [" +
+                "<!ENTITY xxe SYSTEM \"" + uri + "\">]>" +
+                "<SyncResult version=\"1\">" +
+                "<Success>true</Success>" +
+                "<Changed>false</Changed>" +
+                "<ExitCode>0</ExitCode>" +
+                "<Destination>&xxe;</Destination>" +
+                "<Message>unsafe</Message>" +
+                "</SyncResult>";
+            File.WriteAllText(xmlPath, xml, Encoding.UTF8);
+
+            bool rejected = false;
+            try
+            {
+                SyncWorkerProtocol.Read(xmlPath);
+            }
+            catch (XmlException)
+            {
+                rejected = true;
+            }
+            if (!rejected)
+            {
+                throw new InvalidOperationException(
+                    "DTD-bearing XML was not rejected.");
             }
         }
 

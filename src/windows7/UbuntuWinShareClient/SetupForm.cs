@@ -309,6 +309,9 @@ namespace UbuntuWinShareClient
                     }
                 }
 
+                ConfigLifecycle.ApplySettingsChange(
+                    _existing,
+                    config);
                 config.UploadPublicKeyFingerprint = fingerprint;
                 ConfigStore.Save(config);
                 SelfInstaller.RegisterApplication();

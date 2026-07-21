@@ -67,6 +67,99 @@ function Invoke-BoundedClient {
   }
 }
 
+function Invoke-SyncProbeWithRetry {
+  param(
+    [string]$Source,
+    [string]$Target,
+    [string]$ResultPath,
+    [int]$Timeout,
+    [int]$MaxAttempts = 2
+  )
+
+  $attempts = @()
+  for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+    if (Test-Path -LiteralPath $ResultPath) {
+      Remove-Item -LiteralPath $ResultPath -Force
+    }
+
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $errorText = ""
+    try {
+      Invoke-BoundedClient -Timeout $Timeout -Arguments @(
+        "--sync-test",
+        "--source", $Source,
+        "--target", $Target,
+        "--result", $ResultPath
+      )
+    }
+    catch {
+      $errorText = $_.Exception.Message
+    }
+    finally {
+      $watch.Stop()
+    }
+
+    $resultText = if (Test-Path -LiteralPath $ResultPath) {
+      (Get-Content -LiteralPath $ResultPath -Raw).Trim()
+    } else {
+      ""
+    }
+    $success =
+      [string]::IsNullOrWhiteSpace($errorText) -and
+      $resultText -eq "WIN7_CLIENT_SYNC_PROBE_OK"
+    $attempts += [ordered]@{
+      Attempt = $attempt
+      ElapsedMilliseconds = $watch.ElapsedMilliseconds
+      Success = $success
+      Result = $resultText
+      Error = $errorText
+    }
+    if ($success) {
+      return [pscustomobject]@{
+        Success = $true
+        Result = $resultText
+        Attempts = $attempts
+        Failure = ""
+      }
+    }
+    if ($attempt -lt $MaxAttempts) {
+      Start-Sleep -Seconds 5
+    }
+  }
+
+  $last = $attempts[$attempts.Count - 1]
+  $failure =
+    "Sync probe failed after $MaxAttempts attempts. " +
+    "result=$($last.Result) error=$($last.Error)"
+  return [pscustomobject]@{
+    Success = $false
+    Result = $last.Result
+    Attempts = $attempts
+    Failure = $failure
+  }
+}
+
+function Read-SafeXml {
+  param([string]$Path)
+
+  $settings = New-Object System.Xml.XmlReaderSettings
+  $settings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
+  $settings.XmlResolver = $null
+  $reader = $null
+  try {
+    $reader = [System.Xml.XmlReader]::Create($Path, $settings)
+    $document = New-Object System.Xml.XmlDocument
+    $document.XmlResolver = $null
+    $document.Load($reader)
+    return $document
+  }
+  finally {
+    if ($reader) {
+      $reader.Dispose()
+    }
+  }
+}
+
 function Wait-UploadResult {
   param(
     [string]$Path,
@@ -77,7 +170,7 @@ function Wait-UploadResult {
   do {
     if (Test-Path -LiteralPath $Path) {
       try {
-        [xml]$document = Get-Content -LiteralPath $Path -Raw
+        $document = Read-SafeXml -Path $Path
         $status = [string]$document.NasUploadResult.Status
         if ($status -eq "success") {
           return $document.NasUploadResult
@@ -167,6 +260,12 @@ $output = if ([IO.Path]::IsPathRooted($OutputPath)) {
 } else {
   Join-Path (Get-Location).Path $OutputPath
 }
+$outputDirectory = Split-Path -Parent $output
+New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
+$runEvidenceDirectory = Join-Path (
+  Join-Path $outputDirectory "win7-e2e-evidence"
+) $profile
+New-Item -ItemType Directory -Force -Path $runEvidenceDirectory | Out-Null
 
 $evidence = [ordered]@{
   Profile = $profile
@@ -179,6 +278,8 @@ $evidence = [ordered]@{
   Target = $target
   NasSshTarget = $resolvedNasSshTarget
   NasRemoteRoot = $NasRemoteRoot
+  StartedUtc = [DateTime]::UtcNow.ToString("o")
+  EvidenceDirectory = $runEvidenceDirectory
   Rounds = @()
 }
 
@@ -206,19 +307,24 @@ try {
         [Text.UTF8Encoding]::new($false))
     }
 
-    $syncResult = Join-Path $source "sync-result-$round.txt"
-    Invoke-BoundedClient -Timeout $TimeoutSeconds -Arguments @(
-      "--sync-test",
-      "--source", $source,
-      "--target", $target,
-      "--result", $syncResult
-    )
-    $syncText = (Get-Content -LiteralPath $syncResult -Raw).Trim()
-    if ($syncText -ne "WIN7_CLIENT_SYNC_PROBE_OK") {
-      throw "Unexpected sync probe result: $syncText"
+    $syncResult = Join-Path (
+      $runEvidenceDirectory
+    ) "sync-result-$round.txt"
+    $syncProbe = Invoke-SyncProbeWithRetry `
+      -Source $source `
+      -Target $target `
+      -ResultPath $syncResult `
+      -Timeout $TimeoutSeconds
+    if (-not $syncProbe.Success) {
+      $evidence["FailedRound"] = $round
+      $evidence["FailedSyncAttempts"] = $syncProbe.Attempts
+      throw $syncProbe.Failure
     }
+    $syncText = $syncProbe.Result
 
-    $queueResult = Join-Path $source "queue-result-$round.txt"
+    $queueResult = Join-Path (
+      $runEvidenceDirectory
+    ) "queue-result-$round.txt"
     Invoke-BoundedClient -Timeout $TimeoutSeconds -Arguments @(
       "--queue-test",
       "--share", $shareRoot,
@@ -276,16 +382,25 @@ try {
       NasSha256 = $nasFile.Sha256
       NasPath = $nasFile.Path
       ResultXml = $resultXml
+      SyncAttempts = $syncProbe.Attempts
     }
   }
 
-  $outputDirectory = Split-Path -Parent $output
-  New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
+  $evidence["CompletedUtc"] = [DateTime]::UtcNow.ToString("o")
   [IO.File]::WriteAllText(
     $output,
     ($evidence | ConvertTo-Json -Depth 8) + "`n",
     [Text.UTF8Encoding]::new($false))
   Write-Host "WIN7_SAME_NAS_E2E_OK output=$output"
+}
+catch {
+  $evidence["FailedUtc"] = [DateTime]::UtcNow.ToString("o")
+  $evidence["Failure"] = $_.Exception.Message
+  [IO.File]::WriteAllText(
+    $output,
+    ($evidence | ConvertTo-Json -Depth 8) + "`n",
+    [Text.UTF8Encoding]::new($false))
+  throw
 }
 finally {
   if (Test-Path -LiteralPath $source) {

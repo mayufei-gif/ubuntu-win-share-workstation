@@ -23,6 +23,10 @@ dist/
 build/
 coverage/
 artifacts/
+*.obj
+*.pdb
+*.res
+*.ilk
 
 # OS/editor noise
 .DS_Store

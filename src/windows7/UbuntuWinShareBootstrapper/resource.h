@@ -1,0 +1,1 @@
+#define IDR_CLIENT_PAYLOAD 101

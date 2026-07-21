@@ -8,6 +8,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+using System.Xml;
 using System.Xml.Serialization;
 using Microsoft.Win32;
 
@@ -189,8 +190,9 @@ namespace UbuntuWinShareUninstaller
                 XmlSerializer serializer =
                     new XmlSerializer(typeof(AppConfig));
                 using (MemoryStream stream = new MemoryStream(plain))
+                using (XmlReader reader = CreateSecureReader(stream))
                 {
-                    return (AppConfig)serializer.Deserialize(stream);
+                    return (AppConfig)serializer.Deserialize(reader);
                 }
             }
             catch
@@ -204,6 +206,15 @@ namespace UbuntuWinShareUninstaller
                     Array.Clear(plain, 0, plain.Length);
                 }
             }
+        }
+
+        private static XmlReader CreateSecureReader(Stream stream)
+        {
+            XmlReaderSettings settings = new XmlReaderSettings();
+            settings.ProhibitDtd = true;
+            settings.XmlResolver = null;
+            settings.CloseInput = false;
+            return XmlReader.Create(stream, settings);
         }
     }
 
@@ -856,6 +867,7 @@ namespace UbuntuWinShareUninstaller
                 }
                 TestConfigShapeCompatibility();
                 TestConfigBackupFallback();
+                TestConfigDtdRejected();
 
                 WriteResult(
                     resultPath,
@@ -941,6 +953,46 @@ namespace UbuntuWinShareUninstaller
             }
         }
 
+        private static void TestConfigDtdRejected()
+        {
+            string root = Path.Combine(
+                Path.GetTempPath(),
+                "UbuntuWinShareUninstallerDtd-" +
+                Guid.NewGuid().ToString("N"));
+            string configPath = Path.Combine(root, "config.dat");
+            string backupPath = configPath + ".missing";
+            Directory.CreateDirectory(root);
+            try
+            {
+                string xml =
+                    "<?xml version=\"1.0\"?>" +
+                    "<!DOCTYPE AppConfig [" +
+                    "<!ENTITY xxe SYSTEM \"file:///C:/Windows/win.ini\">]>" +
+                    "<AppConfig>" +
+                    "<ShareUnc>&xxe;</ShareUnc>" +
+                    "<DriveLetter>I:</DriveLetter>" +
+                    "</AppConfig>";
+                WriteProtectedXml(configPath, xml);
+                if (ConfigReader.TryLoadFromFiles(
+                        configPath,
+                        backupPath) != null)
+                {
+                    throw new InvalidOperationException(
+                        "Uninstaller accepted DTD-bearing configuration XML.");
+                }
+            }
+            finally
+            {
+                try
+                {
+                    Directory.Delete(root, true);
+                }
+                catch
+                {
+                }
+            }
+        }
+
         private static void WriteProtectedConfiguration(
             string path,
             AppConfig config)
@@ -954,6 +1006,35 @@ namespace UbuntuWinShareUninstaller
                 plain = stream.ToArray();
             }
 
+            byte[] entropy =
+                Encoding.UTF8.GetBytes("UbuntuWinShare.Config.v1");
+            try
+            {
+                byte[] encrypted = ProtectedData.Protect(
+                    plain,
+                    entropy,
+                    DataProtectionScope.CurrentUser);
+                try
+                {
+                    File.WriteAllBytes(path, encrypted);
+                }
+                finally
+                {
+                    Array.Clear(encrypted, 0, encrypted.Length);
+                }
+            }
+            finally
+            {
+                Array.Clear(plain, 0, plain.Length);
+                Array.Clear(entropy, 0, entropy.Length);
+            }
+        }
+
+        private static void WriteProtectedXml(
+            string path,
+            string xml)
+        {
+            byte[] plain = Encoding.UTF8.GetBytes(xml);
             byte[] entropy =
                 Encoding.UTF8.GetBytes("UbuntuWinShare.Config.v1");
             try

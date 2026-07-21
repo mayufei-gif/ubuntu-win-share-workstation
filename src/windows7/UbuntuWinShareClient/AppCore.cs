@@ -89,6 +89,46 @@ namespace UbuntuWinShareClient
         public static readonly string DiagnosticsFile = Path.Combine(Root, "diagnostics.txt");
     }
 
+    internal static class SecureXml
+    {
+        public static XmlReader CreateReader(Stream stream)
+        {
+            return XmlReader.Create(stream, CreateSettings());
+        }
+
+        public static XmlDocument LoadDocument(string path)
+        {
+            XmlDocument document = new XmlDocument();
+            document.XmlResolver = null;
+            using (XmlReader reader = XmlReader.Create(path, CreateSettings()))
+            {
+                document.Load(reader);
+            }
+            return document;
+        }
+
+        public static string LoadRsaPublicKeyXml(string path)
+        {
+            XmlDocument document = LoadDocument(path);
+            XmlElement root = document.DocumentElement;
+            if (root == null || root.Name != "RSAKeyValue")
+            {
+                throw new InvalidOperationException(
+                    "Ubuntu upload agent public key is invalid.");
+            }
+            return root.OuterXml;
+        }
+
+        private static XmlReaderSettings CreateSettings()
+        {
+            XmlReaderSettings settings = new XmlReaderSettings();
+            settings.ProhibitDtd = true;
+            settings.XmlResolver = null;
+            settings.CloseInput = false;
+            return settings;
+        }
+    }
+
     internal static class ConfigStore
     {
         private static readonly byte[] Entropy =
@@ -164,8 +204,9 @@ namespace UbuntuWinShareClient
                 {
                     XmlSerializer serializer = new XmlSerializer(typeof(AppConfig));
                     using (MemoryStream stream = new MemoryStream(plain))
+                    using (XmlReader reader = SecureXml.CreateReader(stream))
                     {
-                        AppConfig config = (AppConfig)serializer.Deserialize(stream);
+                        AppConfig config = (AppConfig)serializer.Deserialize(reader);
                         Normalize(config);
                         return config;
                     }
@@ -195,10 +236,59 @@ namespace UbuntuWinShareClient
                 AppPaths.ConfigBackupFile);
         }
 
+        public static bool EnsureNasPasswordRemoved(AppConfig config)
+        {
+            bool rewrite =
+                NeedsNasPasswordSanitization(AppPaths.ConfigFile) ||
+                NeedsNasPasswordSanitization(AppPaths.ConfigBackupFile);
+            if (!rewrite)
+            {
+                return false;
+            }
+            SaveAfterNasPasswordRemovalToFiles(
+                config,
+                AppPaths.ConfigFile,
+                AppPaths.ConfigBackupFile);
+            return true;
+        }
+
         internal static void SaveToFiles(
             AppConfig config,
             string configPath,
             string backupPath)
+        {
+            SaveToFilesCore(
+                config,
+                configPath,
+                backupPath,
+                false);
+        }
+
+        internal static void SaveAfterNasPasswordRemovalToFiles(
+            AppConfig config,
+            string configPath,
+            string backupPath)
+        {
+            SaveToFilesCore(
+                config,
+                configPath,
+                backupPath,
+                true);
+        }
+
+        internal static bool NeedsNasPasswordSanitization(
+            string path)
+        {
+            AppConfig stored = TryLoad(path, false);
+            return stored == null ||
+                   !Text.IsBlank(stored.NasPassword);
+        }
+
+        private static void SaveToFilesCore(
+            AppConfig config,
+            string configPath,
+            string backupPath,
+            bool synchronizeBackupWithCurrent)
         {
             Normalize(config);
             string directory = Path.GetDirectoryName(configPath);
@@ -223,79 +313,102 @@ namespace UbuntuWinShareClient
                     plain,
                     Entropy,
                     DataProtectionScope.CurrentUser);
-                string temporary = configPath + "." +
-                                   Guid.NewGuid().ToString("N") +
-                                   ".tmp";
                 try
                 {
-                    WriteBytesDurably(temporary, encrypted);
-                    if (File.Exists(configPath))
+                    if (synchronizeBackupWithCurrent)
                     {
-                        File.Replace(
-                            temporary,
-                            configPath,
+                        ReplaceFileWithBytes(
                             backupPath,
-                            true);
+                            encrypted);
+                        ReplaceFileWithBytes(
+                            configPath,
+                            encrypted);
+                        return;
                     }
-                    else
+
+                    string temporary = configPath + "." +
+                                       Guid.NewGuid().ToString("N") +
+                                       ".tmp";
+                    try
                     {
-                        string backupTemporary = backupPath + "." +
-                                                 Guid.NewGuid().ToString("N") +
-                                                 ".tmp";
+                        WriteBytesDurably(temporary, encrypted);
+                        if (File.Exists(configPath))
+                        {
+                            File.Replace(
+                                temporary,
+                                configPath,
+                                backupPath,
+                                true);
+                        }
+                        else
+                        {
+                            ReplaceFileWithBytes(
+                                backupPath,
+                                encrypted);
+                            File.Move(temporary, configPath);
+                        }
+                    }
+                    finally
+                    {
                         try
                         {
-                            File.Copy(
-                                temporary,
-                                backupTemporary,
-                                false);
-                            if (File.Exists(backupPath))
+                            if (File.Exists(temporary))
                             {
-                                File.Replace(
-                                    backupTemporary,
-                                    backupPath,
-                                    null,
-                                    true);
-                            }
-                            else
-                            {
-                                File.Move(
-                                    backupTemporary,
-                                    backupPath);
+                                File.Delete(temporary);
                             }
                         }
-                        finally
+                        catch
                         {
-                            try
-                            {
-                                if (File.Exists(backupTemporary))
-                                {
-                                    File.Delete(backupTemporary);
-                                }
-                            }
-                            catch
-                            {
-                            }
                         }
-                        File.Move(temporary, configPath);
                     }
+
                 }
                 finally
                 {
-                    try
-                    {
-                        if (File.Exists(temporary))
-                        {
-                            File.Delete(temporary);
-                        }
-                    }
-                    catch
-                    {
-                    }
+                    Array.Clear(encrypted, 0, encrypted.Length);
                 }
             }
             finally
             {
                 Array.Clear(plain, 0, plain.Length);
+            }
+        }
+
+        private static void ReplaceFileWithBytes(
+            string path,
+            byte[] bytes)
+        {
+            string temporary = path + "." +
+                               Guid.NewGuid().ToString("N") +
+                               ".tmp";
+            try
+            {
+                WriteBytesDurably(temporary, bytes);
+                if (File.Exists(path))
+                {
+                    File.Replace(
+                        temporary,
+                        path,
+                        null,
+                        true);
+                }
+                else
+                {
+                    File.Move(temporary, path);
+                }
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(temporary))
+                    {
+                        File.Delete(temporary);
+                    }
+                }
+                catch
+                {
+                }
             }
         }
 
@@ -878,8 +991,7 @@ namespace UbuntuWinShareClient
 
         public static SyncResult Read(string path)
         {
-            XmlDocument document = new XmlDocument();
-            document.Load(path);
+            XmlDocument document = SecureXml.LoadDocument(path);
             XmlElement root = document.DocumentElement;
             if (root == null ||
                 root.Name != "SyncResult" ||
@@ -1333,6 +1445,88 @@ namespace UbuntuWinShareClient
         }
     }
 
+    internal static class ConfigLifecycle
+    {
+        public static void ApplySettingsChange(
+            AppConfig previous,
+            AppConfig current)
+        {
+            if (previous == null || current == null)
+            {
+                return;
+            }
+
+            bool shareChanged = !SameIgnoreCase(
+                previous.ShareUnc,
+                current.ShareUnc);
+            bool syncIdentityChanged =
+                shareChanged ||
+                !SameIgnoreCase(
+                    previous.SourceFolder,
+                    current.SourceFolder) ||
+                !SameOrdinal(
+                    previous.ProfileName,
+                    current.ProfileName);
+            bool uploadTargetChanged =
+                syncIdentityChanged ||
+                previous.NasPort != current.NasPort ||
+                !SameIgnoreCase(
+                    previous.NasHost,
+                    current.NasHost) ||
+                !SameOrdinal(
+                    previous.NasUsername,
+                    current.NasUsername) ||
+                !SameOrdinal(
+                    previous.NasRemoteRoot,
+                    current.NasRemoteRoot) ||
+                !SameOrdinal(
+                    previous.NasPassword,
+                    current.NasPassword);
+
+            if (syncIdentityChanged)
+            {
+                current.InitialSyncCompleted = false;
+            }
+            if (uploadTargetChanged)
+            {
+                current.UploadPromptShown = false;
+                current.AutoUploadEnabled = false;
+                current.UploadPending = false;
+                current.LastQueuedJobId = "";
+                current.LastQueuedUtc = "";
+            }
+            if (shareChanged)
+            {
+                current.UploadPublicKeyFingerprint = "";
+            }
+        }
+
+        private static bool SameIgnoreCase(
+            string left,
+            string right)
+        {
+            return string.Equals(
+                Normalize(left),
+                Normalize(right),
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool SameOrdinal(
+            string left,
+            string right)
+        {
+            return string.Equals(
+                Normalize(left),
+                Normalize(right),
+                StringComparison.Ordinal);
+        }
+
+        private static string Normalize(string value)
+        {
+            return value == null ? "" : value.Trim();
+        }
+    }
+
     internal static class UploadQueue
     {
         private const string ControlDirectory = ".ubuntu-win-share";
@@ -1375,8 +1569,7 @@ namespace UbuntuWinShareClient
                 return null;
             }
 
-            XmlDocument document = new XmlDocument();
-            document.Load(path);
+            XmlDocument document = SecureXml.LoadDocument(path);
             XmlElement root = document.DocumentElement;
             if (root == null || root.Name != "NasUploadResult")
             {
@@ -1458,7 +1651,8 @@ namespace UbuntuWinShareClient
                     RSACryptoServiceProvider rsa = new RSACryptoServiceProvider();
                     try
                     {
-                        rsa.FromXmlString(File.ReadAllText(keyPath, Encoding.UTF8));
+                        rsa.FromXmlString(
+                            SecureXml.LoadRsaPublicKeyXml(keyPath));
                         byte[] encrypted = rsa.Encrypt(plain, true);
                         encryptedPassword = Convert.ToBase64String(encrypted);
                     }

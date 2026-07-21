@@ -2,6 +2,12 @@
 
 ## 0.3.2 - Unreleased release candidate
 
+- Added a native x86 bootstrapper so a Win7 SP1 machine with .NET Framework
+  3.5.1 disabled can repair prerequisites before the managed client starts.
+- Added a double-click administrator fallback for the same dependency repair,
+  plus non-destructive self-tests for the bootstrapper and fallback script.
+- Made the customer ZIP use `UbuntuWinShare-Win7-0.3.2-Setup.exe` as its
+  primary entry point and package the fallback client only under `人工兜底`.
 - Added a separate double-click Windows 7 uninstaller executable.
 - Embedded the uninstaller in the installer so tray and Control Panel removal
   use the same cleanup path.
@@ -27,6 +33,16 @@
 - Made agent installation wait for and verify exactly one active upload agent,
   plus one watchdog when the cron fallback owns startup.
 - Added a repeatable two-round Windows-to-Ubuntu-to-NAS SHA-256 E2E verifier.
+- Rewrote both DPAPI configuration copies after successful SSH-key upload so
+  an older NAS password cannot remain in `config.dat.bak`.
+- Reset synchronization, upload authorization, queued-result, and public-key
+  trust state when their corresponding source, share, or NAS settings change.
+- Prohibited DTD and external entity resolution when reading configuration,
+  worker-result, upload-result, and Ubuntu upload-agent public-key XML.
+- Added package-level and release-level `SHA256SUMS.txt` manifests.
+- Added a customer-facing real Windows 7 SP1 acceptance checklist covering
+  install, two-round hashes, password rotation, restart, reconnect, no-flash,
+  uninstall, and three-side data retention.
 
 This version must remain untagged until installation, logon startup, network
 recovery, no-flash behavior, password rotation, and uninstall retention pass on

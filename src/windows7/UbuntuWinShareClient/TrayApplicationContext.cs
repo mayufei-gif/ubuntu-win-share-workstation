@@ -211,10 +211,13 @@ namespace UbuntuWinShareClient
                     "success",
                     StringComparison.OrdinalIgnoreCase))
             {
-                if (CredentialLifecycle.ClearNasPasswordAfterSuccessfulUpload(
-                        _config))
+                bool passwordRemoved =
+                    CredentialLifecycle.ClearNasPasswordAfterSuccessfulUpload(
+                        _config);
+                bool persistedCopiesSanitized =
+                    ConfigStore.EnsureNasPasswordRemoved(_config);
+                if (passwordRemoved || persistedCopiesSanitized)
                 {
-                    ConfigStore.Save(_config);
                     Log.Write(
                         "credentials",
                         "NAS password removed after SSH key upload succeeded.");
