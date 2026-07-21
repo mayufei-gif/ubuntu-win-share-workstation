@@ -4,6 +4,7 @@ set -euo pipefail
 SHARE_ROOT="${SHARE_ROOT:-$HOME/C/ubuntu-win}"
 STATE_ROOT="${STATE_ROOT:-$HOME/.local/share/ubuntu-win-share-agent}"
 ALLOWED_HOSTS="${ALLOWED_HOSTS:-}"
+FALLBACK_HOSTS="${FALLBACK_HOSTS:-}"
 POLL_SECONDS="${POLL_SECONDS:-15}"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$STATE_ROOT/venv"
@@ -36,11 +37,19 @@ fi
 install -m 0700 "$SOURCE_DIR/nas_upload_agent.py" "$AGENT"
 
 allowed_args=()
+fallback_args=()
 IFS=',' read -r -a hosts <<<"$ALLOWED_HOSTS"
 for host in "${hosts[@]}"; do
   host="${host//[[:space:]]/}"
   if [[ -n "$host" ]]; then
     allowed_args+=(--allowed-host "$host")
+  fi
+done
+IFS=',' read -r -a fallback_hosts <<<"$FALLBACK_HOSTS"
+for host in "${fallback_hosts[@]}"; do
+  host="${host//[[:space:]]/}"
+  if [[ -n "$host" ]]; then
+    fallback_args+=(--fallback-host "$host")
   fi
 done
 
@@ -49,7 +58,8 @@ done
   --share-root "$SHARE_ROOT" \
   --state-root "$STATE_ROOT" \
   --poll-seconds "$POLL_SECONDS" \
-  "${allowed_args[@]}"
+  "${allowed_args[@]}" \
+  "${fallback_args[@]}"
 
 cat >"$WATCHDOG" <<EOF
 #!/usr/bin/env bash
@@ -210,7 +220,7 @@ fi
 
 "$VENV/bin/python" "$AGENT" --self-test
 
-echo "NAS_UPLOAD_AGENT_INSTALL_OK share_root=$SHARE_ROOT state_root=$STATE_ROOT linger=${linger:-unknown} systemd=$systemd_status startup=$startup_mode watchdogs=$watchdog_count agents=$agent_count"
+echo "NAS_UPLOAD_AGENT_INSTALL_OK share_root=$SHARE_ROOT state_root=$STATE_ROOT linger=${linger:-unknown} systemd=$systemd_status startup=$startup_mode watchdogs=$watchdog_count agents=$agent_count fallbacks=$FALLBACK_HOSTS"
 if [[ "$startup_mode" == "cron" ]]; then
   echo "INFO: exactly one cron watchdog startup entry is active; the user service is disabled."
 fi

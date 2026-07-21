@@ -158,6 +158,18 @@ Upload jobs are written as unique files in the shared queue. This avoids
 same-name replacement locks on Samba and lets the Ubuntu agent retry a job
 after a temporary NAS or network failure.
 
+For a NAS that has both a Tailscale address and a LAN address, configure the
+Ubuntu agent with both trusted routes. `ALLOWED_HOSTS` must contain every route,
+and `FALLBACK_HOSTS` lists the LAN routes in priority order. The agent tries the
+job's NAS host first and switches to a fallback only after a transient transport
+failure; authentication failures and host-key mismatches are not downgraded.
+
+```bash
+ALLOWED_HOSTS='100.78.3.45,192.168.86.103' \
+FALLBACK_HOSTS='192.168.86.103' \
+bash scripts/ubuntu/install-nas-upload-agent.sh
+```
+
 The legacy command-line ZIP can also be transferred to a Win7 machine before
 Git is installed. Run:
 

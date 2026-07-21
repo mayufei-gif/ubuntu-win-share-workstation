@@ -2,6 +2,10 @@
 
 ## 0.3.2 - Unreleased release candidate
 
+- Added an allowlisted NAS LAN fallback route for Ubuntu uploads when the
+  primary Tailscale NAS route has a transient transport failure.
+  Authentication rejection and host-key mismatch remain terminal failures.
+
 - Added a native x86 bootstrapper so a Win7 SP1 machine with .NET Framework
   3.5.1 disabled can repair prerequisites before the managed client starts.
 - Added a double-click administrator fallback for the same dependency repair,
