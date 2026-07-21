@@ -1,0 +1,7 @@
+#include "resource.h"
+
+1 24 "app.manifest"
+#ifndef CLIENT_PAYLOAD_PATH
+#define CLIENT_PAYLOAD_PATH "../../../artifacts/UbuntuWinShare-Win7-0.3.2.exe"
+#endif
+IDR_CLIENT_PAYLOAD RCDATA CLIENT_PAYLOAD_PATH

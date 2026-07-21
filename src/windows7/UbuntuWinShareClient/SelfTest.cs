@@ -4,6 +4,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Xml;
 using System.Xml.Serialization;
 
 namespace UbuntuWinShareClient
@@ -19,13 +20,20 @@ namespace UbuntuWinShareClient
             {
                 Directory.CreateDirectory(root);
                 TestProtectedConfiguration();
+                TestAtomicConfiguration(root);
                 TestRsaEncryption();
                 TestRobocopy(root);
+                TestProcessSupervisor(root);
+                TestSyncWorkerProtocol(root);
+                TestSecureXml(root);
                 TestSyncSchedule();
                 TestRobocopyExitCodes();
-                TestCredentialLifecycle();
+                TestCredentialLifecycle(root);
+                TestConfigLifecycle();
                 TestConfigClone();
                 TestQueuePublish(root);
+                TestUninstallerContract();
+                TestWindowsVersionGate();
                 WriteResult(resultPath, "WIN7_CLIENT_SELF_TEST_OK");
                 return 0;
             }
@@ -69,6 +77,29 @@ namespace UbuntuWinShareClient
             catch (Exception ex)
             {
                 WriteResult(resultPath, "WIN7_CLIENT_SYNC_PROBE_FAILED " + ErrorText.Safe(ex));
+                return 1;
+            }
+        }
+
+        public static int RunOperatingSystemProbe(string resultPath)
+        {
+            try
+            {
+                bool allowed = WindowsVersion.IsWindows7Sp1();
+                WriteResult(
+                    resultPath,
+                    "WIN7_OS_PROBE " +
+                    (allowed ? "ALLOWED" : "REJECTED") +
+                    " version=" +
+                    WindowsVersion.DescribeCurrent());
+                return allowed ? 0 : 3;
+            }
+            catch (Exception ex)
+            {
+                WriteResult(
+                    resultPath,
+                    "WIN7_OS_PROBE_FAILED " +
+                    ErrorText.Safe(ex));
                 return 1;
             }
         }
@@ -159,6 +190,93 @@ namespace UbuntuWinShareClient
             Array.Clear(restored, 0, restored.Length);
         }
 
+        private static void TestAtomicConfiguration(string root)
+        {
+            string configPath = Path.Combine(root, "config.dat");
+            string backupPath = configPath + ".bak";
+
+            AppConfig first = new AppConfig();
+            first.ProfileName = "first";
+            first.SharePassword = "first-smb-secret";
+            ConfigStore.SaveToFiles(
+                first,
+                configPath,
+                backupPath);
+            if (!File.Exists(configPath) ||
+                !File.Exists(backupPath))
+            {
+                throw new InvalidOperationException(
+                    "The first configuration save did not create both copies.");
+            }
+            AppConfig firstBackup = ConfigStore.LoadFromFiles(
+                backupPath,
+                backupPath + ".missing",
+                false);
+            if (firstBackup == null ||
+                firstBackup.ProfileName != "first" ||
+                firstBackup.SharePassword != "first-smb-secret")
+            {
+                throw new InvalidOperationException(
+                    "The first configuration backup is not readable.");
+            }
+
+            AppConfig second = first.Clone();
+            second.ProfileName = "second";
+            second.SharePassword = "second-smb-secret";
+            ConfigStore.SaveToFiles(
+                second,
+                configPath,
+                backupPath);
+
+            AppConfig current = ConfigStore.LoadFromFiles(
+                configPath,
+                backupPath,
+                false);
+            if (current == null ||
+                current.ProfileName != "second" ||
+                current.SharePassword != "second-smb-secret")
+            {
+                throw new InvalidOperationException(
+                    "Atomic configuration did not preserve the current file.");
+            }
+
+            File.WriteAllText(
+                configPath,
+                "corrupt",
+                Encoding.ASCII);
+            AppConfig recovered = ConfigStore.LoadFromFiles(
+                configPath,
+                backupPath,
+                false);
+            if (recovered == null ||
+                recovered.ProfileName != "first" ||
+                recovered.SharePassword != "first-smb-secret")
+            {
+                throw new InvalidOperationException(
+                    "Configuration backup recovery failed.");
+            }
+
+            AppConfig restored = ConfigStore.LoadFromFiles(
+                configPath,
+                backupPath,
+                false);
+            if (restored == null ||
+                restored.ProfileName != "first")
+            {
+                throw new InvalidOperationException(
+                    "Recovered configuration was not restored to the main file.");
+            }
+
+            string[] stagingFiles = Directory.GetFiles(
+                root,
+                "config.dat.*.tmp");
+            if (stagingFiles.Length != 0)
+            {
+                throw new InvalidOperationException(
+                    "Atomic configuration left temporary files behind.");
+            }
+        }
+
         private static void TestRsaEncryption()
         {
             RSACryptoServiceProvider rsa = new RSACryptoServiceProvider(2048);
@@ -237,7 +355,7 @@ namespace UbuntuWinShareClient
             }
         }
 
-        private static void TestCredentialLifecycle()
+        private static void TestCredentialLifecycle(string root)
         {
             AppConfig config = new AppConfig();
             config.NasPassword = "temporary-password";
@@ -255,6 +373,149 @@ namespace UbuntuWinShareClient
             {
                 throw new InvalidOperationException(
                     "NAS password cleanup was not idempotent.");
+            }
+
+            string configPath = Path.Combine(
+                root,
+                "credential-config.dat");
+            string backupPath = configPath + ".bak";
+            AppConfig persisted = new AppConfig();
+            persisted.ProfileName = "credential-test";
+            persisted.NasPassword = "old-temporary-password";
+            ConfigStore.SaveToFiles(
+                persisted,
+                configPath,
+                backupPath);
+            persisted.NasPassword = "";
+            ConfigStore.SaveToFiles(
+                persisted,
+                configPath,
+                backupPath);
+
+            if (ConfigStore.NeedsNasPasswordSanitization(configPath) ||
+                !ConfigStore.NeedsNasPasswordSanitization(backupPath))
+            {
+                throw new InvalidOperationException(
+                    "Stale backup NAS password was not detected.");
+            }
+            if (CredentialLifecycle.ClearNasPasswordAfterSuccessfulUpload(
+                    persisted))
+            {
+                throw new InvalidOperationException(
+                    "Already-cleared NAS password unexpectedly reported a change.");
+            }
+            ConfigStore.SaveAfterNasPasswordRemovalToFiles(
+                persisted,
+                configPath,
+                backupPath);
+
+            AppConfig current = ConfigStore.LoadFromFiles(
+                configPath,
+                configPath + ".missing",
+                false);
+            AppConfig backup = ConfigStore.LoadFromFiles(
+                backupPath,
+                backupPath + ".missing",
+                false);
+            if (current == null ||
+                backup == null ||
+                !Text.IsBlank(current.NasPassword) ||
+                !Text.IsBlank(backup.NasPassword))
+            {
+                throw new InvalidOperationException(
+                    "NAS password remained in the current or backup configuration.");
+            }
+            if (ConfigStore.NeedsNasPasswordSanitization(configPath) ||
+                ConfigStore.NeedsNasPasswordSanitization(backupPath))
+            {
+                throw new InvalidOperationException(
+                    "Sanitized configuration copies still require rewriting.");
+            }
+        }
+
+        private static void TestConfigLifecycle()
+        {
+            AppConfig original = ConfigWithUploadState();
+
+            AppConfig unchanged = original.Clone();
+            ConfigLifecycle.ApplySettingsChange(original, unchanged);
+            AssertUploadStatePreserved(unchanged);
+
+            AppConfig nasChanged = original.Clone();
+            nasChanged.NasHost = "nas-new.example";
+            ConfigLifecycle.ApplySettingsChange(original, nasChanged);
+            if (!nasChanged.InitialSyncCompleted ||
+                nasChanged.UploadPromptShown ||
+                nasChanged.AutoUploadEnabled ||
+                nasChanged.UploadPending ||
+                !Text.IsBlank(nasChanged.LastQueuedJobId) ||
+                !Text.IsBlank(nasChanged.LastQueuedUtc) ||
+                nasChanged.UploadPublicKeyFingerprint != "trusted-key")
+            {
+                throw new InvalidOperationException(
+                    "NAS target change did not reset only upload authorization state.");
+            }
+
+            AppConfig sourceChanged = original.Clone();
+            sourceChanged.SourceFolder = "C:\\new-source";
+            ConfigLifecycle.ApplySettingsChange(original, sourceChanged);
+            if (sourceChanged.InitialSyncCompleted ||
+                sourceChanged.UploadPromptShown ||
+                sourceChanged.AutoUploadEnabled ||
+                sourceChanged.UploadPending ||
+                sourceChanged.UploadPublicKeyFingerprint != "trusted-key")
+            {
+                throw new InvalidOperationException(
+                    "Sync identity change did not reset sync and upload state.");
+            }
+
+            AppConfig shareChanged = original.Clone();
+            shareChanged.ShareUnc = "\\\\server-two\\ubuntu-win";
+            ConfigLifecycle.ApplySettingsChange(original, shareChanged);
+            if (shareChanged.InitialSyncCompleted ||
+                shareChanged.UploadPromptShown ||
+                shareChanged.AutoUploadEnabled ||
+                shareChanged.UploadPending ||
+                !Text.IsBlank(shareChanged.UploadPublicKeyFingerprint))
+            {
+                throw new InvalidOperationException(
+                    "Share change did not reset trust and synchronization state.");
+            }
+        }
+
+        private static AppConfig ConfigWithUploadState()
+        {
+            AppConfig config = new AppConfig();
+            config.SourceFolder = "C:\\source";
+            config.ProfileName = "profile";
+            config.ShareUnc = "\\\\server-one\\ubuntu-win";
+            config.NasHost = "nas.example";
+            config.NasPort = 22;
+            config.NasUsername = "customer";
+            config.NasPassword = "temporary-password";
+            config.NasRemoteRoot = "Win7Uploads";
+            config.InitialSyncCompleted = true;
+            config.UploadPromptShown = true;
+            config.AutoUploadEnabled = true;
+            config.UploadPending = true;
+            config.UploadPublicKeyFingerprint = "trusted-key";
+            config.LastQueuedJobId = "job";
+            config.LastQueuedUtc = "2026-07-20T00:00:00Z";
+            return config;
+        }
+
+        private static void AssertUploadStatePreserved(AppConfig config)
+        {
+            if (!config.InitialSyncCompleted ||
+                !config.UploadPromptShown ||
+                !config.AutoUploadEnabled ||
+                !config.UploadPending ||
+                config.UploadPublicKeyFingerprint != "trusted-key" ||
+                config.LastQueuedJobId != "job" ||
+                config.LastQueuedUtc != "2026-07-20T00:00:00Z")
+            {
+                throw new InvalidOperationException(
+                    "Unchanged settings unexpectedly reset runtime state.");
             }
         }
 
@@ -326,6 +587,243 @@ namespace UbuntuWinShareClient
             {
                 throw new InvalidOperationException(
                     "Unique queue filename contract changed.");
+            }
+        }
+
+        private static void TestProcessSupervisor(string root)
+        {
+            string command = Environment.GetEnvironmentVariable("COMSPEC");
+            if (Text.IsBlank(command))
+            {
+                command = "cmd.exe";
+            }
+
+            ProcessStartInfo quickStart = new ProcessStartInfo();
+            quickStart.FileName = command;
+            quickStart.Arguments = "/d /c exit 7";
+            quickStart.CreateNoWindow = true;
+            quickStart.UseShellExecute = false;
+            using (Process quick = Process.Start(quickStart))
+            {
+                ProcessWaitResult quickResult =
+                    ProcessSupervisor.Wait(quick, null, 5000);
+                if (!quickResult.Exited ||
+                    quickResult.Stopped ||
+                    quickResult.TimedOut ||
+                    quickResult.ExitCode != 7)
+                {
+                    throw new InvalidOperationException(
+                        "Process supervisor lost a normal exit code.");
+                }
+            }
+
+            ProcessStartInfo timeoutStart = new ProcessStartInfo();
+            timeoutStart.FileName = command;
+            timeoutStart.Arguments =
+                "/d /c ping 127.0.0.1 -n 30 >nul";
+            timeoutStart.CreateNoWindow = true;
+            timeoutStart.UseShellExecute = false;
+            using (Process hanging = Process.Start(timeoutStart))
+            {
+                ProcessWaitResult timeoutResult =
+                    ProcessSupervisor.Wait(hanging, null, 500);
+                if (!timeoutResult.TimedOut ||
+                    !timeoutResult.Exited ||
+                    !hanging.HasExited)
+                {
+                    throw new InvalidOperationException(
+                        "Process supervisor did not terminate a timeout.");
+                }
+            }
+
+            using (ManualResetEvent stop = new ManualResetEvent(true))
+            {
+                ProcessStartInfo stoppedStart =
+                    new ProcessStartInfo();
+                stoppedStart.FileName = command;
+                stoppedStart.Arguments =
+                    "/d /c ping 127.0.0.1 -n 30 >nul";
+                stoppedStart.CreateNoWindow = true;
+                stoppedStart.UseShellExecute = false;
+                using (Process stopped = Process.Start(stoppedStart))
+                {
+                    ProcessWaitResult stoppedResult =
+                        ProcessSupervisor.Wait(
+                            stopped,
+                            stop,
+                            5000);
+                    if (!stoppedResult.Stopped ||
+                        stoppedResult.TimedOut ||
+                        !stoppedResult.Exited ||
+                        !stopped.HasExited)
+                    {
+                        throw new InvalidOperationException(
+                            "Process supervisor ignored the stop signal.");
+                    }
+                }
+            }
+
+            string childStarted = Path.Combine(
+                root,
+                "supervisor-child-started.txt");
+            string orphanMarker = Path.Combine(
+                root,
+                "supervisor-orphan-marker.txt");
+            string childScript = Path.Combine(
+                root,
+                "supervisor-child.cmd");
+            string parentScript = Path.Combine(
+                root,
+                "supervisor-parent.cmd");
+            File.WriteAllText(
+                childScript,
+                "@echo off\r\n" +
+                ">\"" + childStarted + "\" echo started\r\n" +
+                "ping 127.0.0.1 -n 4 >nul\r\n" +
+                ">\"" + orphanMarker + "\" echo orphan\r\n",
+                Encoding.ASCII);
+            File.WriteAllText(
+                parentScript,
+                "@echo off\r\n" +
+                "start \"\" /b cmd.exe /d /c call \"" +
+                childScript +
+                "\"\r\n" +
+                "ping 127.0.0.1 -n 30 >nul\r\n",
+                Encoding.ASCII);
+
+            ProcessStartInfo treeStart = new ProcessStartInfo();
+            treeStart.FileName = command;
+            treeStart.Arguments =
+                "/d /c call \"" + parentScript + "\"";
+            treeStart.CreateNoWindow = true;
+            treeStart.UseShellExecute = false;
+            using (Process tree = Process.Start(treeStart))
+            {
+                DateTime childDeadline =
+                    DateTime.UtcNow.AddSeconds(5);
+                while (!File.Exists(childStarted) &&
+                       DateTime.UtcNow < childDeadline)
+                {
+                    Thread.Sleep(50);
+                }
+                if (!File.Exists(childStarted))
+                {
+                    throw new InvalidOperationException(
+                        "Process supervisor child-process test did not start.");
+                }
+
+                ProcessWaitResult treeResult =
+                    ProcessSupervisor.Wait(tree, null, 500);
+                if (!treeResult.TimedOut ||
+                    !treeResult.Exited ||
+                    !tree.HasExited)
+                {
+                    throw new InvalidOperationException(
+                        "Process supervisor did not terminate the process tree.");
+                }
+            }
+
+            Thread.Sleep(4000);
+            if (File.Exists(orphanMarker))
+            {
+                throw new InvalidOperationException(
+                    "Process supervisor left a child process running.");
+            }
+        }
+
+        private static void TestSyncWorkerProtocol(string root)
+        {
+            string path = Path.Combine(root, "sync-worker-result.xml");
+            SyncResult expected = new SyncResult();
+            expected.Success = false;
+            expected.Changed = true;
+            expected.ExitCode = -2;
+            expected.Destination = "\\\\server\\share\\target";
+            expected.Message = "timeout";
+            SyncWorkerProtocol.Write(path, expected);
+            SyncResult actual = SyncWorkerProtocol.Read(path);
+            if (actual.Success != expected.Success ||
+                actual.Changed != expected.Changed ||
+                actual.ExitCode != expected.ExitCode ||
+                actual.Destination != expected.Destination ||
+                actual.Message != expected.Message)
+            {
+                throw new InvalidOperationException(
+                    "Sync worker result protocol round trip failed.");
+            }
+        }
+
+        private static void TestSecureXml(string root)
+        {
+            string secretPath = Path.Combine(root, "xml-secret.txt");
+            string xmlPath = Path.Combine(root, "unsafe-result.xml");
+            File.WriteAllText(
+                secretPath,
+                "DO_NOT_READ",
+                Encoding.ASCII);
+            string uri = new Uri(secretPath).AbsoluteUri;
+            string xml =
+                "<?xml version=\"1.0\"?>" +
+                "<!DOCTYPE SyncResult [" +
+                "<!ENTITY xxe SYSTEM \"" + uri + "\">]>" +
+                "<SyncResult version=\"1\">" +
+                "<Success>true</Success>" +
+                "<Changed>false</Changed>" +
+                "<ExitCode>0</ExitCode>" +
+                "<Destination>&xxe;</Destination>" +
+                "<Message>unsafe</Message>" +
+                "</SyncResult>";
+            File.WriteAllText(xmlPath, xml, Encoding.UTF8);
+
+            bool rejected = false;
+            try
+            {
+                SyncWorkerProtocol.Read(xmlPath);
+            }
+            catch (XmlException)
+            {
+                rejected = true;
+            }
+            if (!rejected)
+            {
+                throw new InvalidOperationException(
+                    "DTD-bearing XML was not rejected.");
+            }
+        }
+
+        private static void TestUninstallerContract()
+        {
+            if (AppSignals.ClientMutexName !=
+                    "Local\\UbuntuWinShareClient.Singleton" ||
+                AppSignals.ExitEventName !=
+                    "Local\\UbuntuWinShareClient.Exit")
+            {
+                throw new InvalidOperationException(
+                    "Client exit signal contract changed.");
+            }
+            if (!SelfInstaller.HasEmbeddedUninstaller())
+            {
+                throw new InvalidOperationException(
+                    "Embedded uninstaller is missing.");
+            }
+        }
+
+        private static void TestWindowsVersionGate()
+        {
+            if (!WindowsVersion.IsWindows7Sp1(6, 1, 7601) ||
+                !WindowsVersion.IsWindows7Sp1(6, 1, 9999) ||
+                !WindowsVersion.IsWindows7Sp1(6, 1, 7601, 1))
+            {
+                throw new InvalidOperationException(
+                    "Windows 7 SP1 was rejected by the OS gate.");
+            }
+            if (WindowsVersion.IsWindows7Sp1(6, 1, 7600) ||
+                WindowsVersion.IsWindows7Sp1(10, 0, 19045) ||
+                WindowsVersion.IsWindows7Sp1(6, 2, 9200) ||
+                WindowsVersion.IsWindows7Sp1(6, 1, 7601, 2))
+            {
+                throw new InvalidOperationException(
+                    "A non-Windows 7 SP1 version passed the OS gate.");
             }
         }
 

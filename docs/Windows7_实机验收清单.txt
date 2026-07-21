@@ -1,0 +1,109 @@
+﻿Ubuntu Win Share 0.3.2 Windows 7 SP1 实机验收清单
+
+验收信息
+
+- 日期：
+- 操作人：
+- Win7 电脑名：
+- Windows 版本和 Service Pack：
+- Ubuntu 共享 UNC：
+- 映射盘符：
+- 同步名称：
+- NAS SSH 用户名（不要记录密码）：
+- 网络方式：同一局域网 / Tailscale 子网路由 / 其它
+
+一、安装前检查
+
+1. 系统必须是 Windows 7 SP1；Setup 负责检查并在必要时请求管理员权限修复
+   .NET Framework 3.5.1 和 Workstation 服务。
+2. 在资源管理器地址栏打开 Ubuntu 共享 UNC，确认能看到共享内容。
+3. 在命令提示符中核对安装包 SHA-256：
+
+   certutil -hashfile UbuntuWinShare-Win7-0.3.2-Setup.exe SHA256
+
+4. 运行非安装自测并确认两个结果文件分别包含：
+
+   WIN7_BOOTSTRAPPER_SELF_TEST_OK
+   WIN7_UNINSTALLER_SELF_TEST_OK
+   WIN7_MANUAL_FALLBACK_SELF_TEST_OK
+
+   命令：
+
+   start "" /wait UbuntuWinShare-Win7-0.3.2-Setup.exe --self-test --result setup-self-test.txt
+   start "" /wait UbuntuWinShare-Win7-0.3.2-Uninstall.exe --self-test --result uninstaller-self-test.txt
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File "人工兜底\Repair-Windows7Dependencies.ps1" -SelfTest
+
+二、双击安装
+
+1. 双击 UbuntuWinShare-Win7-0.3.2-Setup.exe。
+2. 输入本地目录、同步名称、Ubuntu 共享、盘符、Samba 账号和 NAS 设置。
+3. 点击“安装并开始”后确认：
+
+   - 系统托盘出现 Ubuntu Win Share。
+   - %LOCALAPPDATA%\UbuntuWinShare\UbuntuWinShare.exe 存在。
+   - %LOCALAPPDATA%\UbuntuWinShare\UbuntuWinShareUninstaller.exe 存在。
+   - 指定盘符可以打开。
+   - 下列命令能看到启动项和卸载项：
+
+     reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v UbuntuWinShare
+     reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\UbuntuWinShare
+
+三、本地到 Ubuntu 到同一 NAS
+
+1. 在选定的 Win7 本地目录创建一个唯一测试文件。
+2. 在两分钟内确认文件出现在：
+
+   Ubuntu共享\Win7Sync\电脑名\同步名称
+
+3. 首次同步完成后必须只弹出一次 NAS 上传确认框。
+4. 点击“确定”，等待 Ubuntu 上传到配置的同一 NAS 账号。
+5. 分别在 Win7 原文件、Ubuntu 共享文件和 NAS 文件上计算 SHA-256，
+   三处必须完全一致。
+6. 修改测试文件，再次确认三处 SHA-256 一致。
+
+四、临时 NAS 密码轮换
+
+1. 首次 NAS 上传成功后，修改 NAS 临时密码。
+2. 在 Win7 本地目录再次新增或修改文件。
+3. 不重新输入旧密码，Ubuntu 仍必须通过已建立的 SSH key 上传成功。
+4. 客户端日志不得输出 Samba 密码或 NAS 密码。
+
+五、重启与断网恢复
+
+1. 重启 Win7 并登录同一个用户。
+2. 两分钟内确认托盘程序自动启动、映射盘可打开、本地改动可继续同步。
+3. 断开 Win7 网络至少一分钟，再重新连接。
+4. 两分钟内确认映射和同步自动恢复。
+5. 登录、断网和重连测试期间不得出现周期性 PowerShell 或 CMD 闪窗。
+6. 观察五分钟，任务管理器中不得出现由本程序持续反复拉起的
+   powershell.exe。
+
+六、设置变更
+
+1. 修改本地源目录、同步名称、Ubuntu 共享或 NAS 目标中的任一关键项。
+2. 新目标必须重新完成首次同步或上传确认，不得沿用旧目标的待处理任务。
+3. Ubuntu 上传代理公钥发生变化时，程序必须要求人工确认，不能静默信任。
+
+七、双击卸载与数据保留
+
+1. 双击 UbuntuWinShare-Win7-0.3.2-Uninstall.exe 并确认卸载。
+2. 确认托盘程序退出，启动项、卸载项和本机客户端目录被清理。
+3. 只有本程序配置且仍指向相同共享的映射盘可以被断开。
+4. 下列数据必须保留：
+
+   - Win7 原始同步目录及其全部文件。
+   - Ubuntu 共享中的 Win7Sync 数据。
+   - NAS 账号中已经上传的数据。
+
+最终结论
+
+- [ ] 双击安装通过
+- [ ] 两轮三端 SHA-256 一致
+- [ ] NAS 密码轮换后 SSH key 上传通过
+- [ ] Win7 重启自动启动和映射恢复通过
+- [ ] 断网重连自动恢复通过
+- [ ] 五分钟无 PowerShell/CMD 闪窗
+- [ ] 双击卸载通过
+- [ ] Win7、Ubuntu、NAS 三端数据保留通过
+
+所有项目全部勾选后，才允许给 v0.3.2 打标签并发布正式版。

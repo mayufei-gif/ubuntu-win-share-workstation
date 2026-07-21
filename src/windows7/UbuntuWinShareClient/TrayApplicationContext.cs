@@ -23,10 +23,14 @@ namespace UbuntuWinShareClient
         private long _lastWatcherEventTicks;
         private DateTime _nextResultCheck;
         private string _lastUploadResultSignature = "";
+        private readonly System.Threading.EventWaitHandle _exitEvent;
 
-        public TrayApplicationContext(AppConfig config)
+        public TrayApplicationContext(
+            AppConfig config,
+            System.Threading.EventWaitHandle exitEvent)
         {
             _config = config;
+            _exitEvent = exitEvent;
 
             ContextMenuStrip menu = new ContextMenuStrip();
             _statusItem = new ToolStripMenuItem("状态：等待首次同步");
@@ -128,6 +132,15 @@ namespace UbuntuWinShareClient
 
         private void TimerTick(object sender, EventArgs e)
         {
+            if (_exitEvent.WaitOne(0, false))
+            {
+                if (!_worker.IsBusy && !_resultWorker.IsBusy)
+                {
+                    ExitThread();
+                }
+                return;
+            }
+
             if (!_resultWorker.IsBusy && DateTime.Now >= _nextResultCheck)
             {
                 _nextResultCheck = DateTime.Now.AddSeconds(15);
@@ -198,10 +211,13 @@ namespace UbuntuWinShareClient
                     "success",
                     StringComparison.OrdinalIgnoreCase))
             {
-                if (CredentialLifecycle.ClearNasPasswordAfterSuccessfulUpload(
-                        _config))
+                bool passwordRemoved =
+                    CredentialLifecycle.ClearNasPasswordAfterSuccessfulUpload(
+                        _config);
+                bool persistedCopiesSanitized =
+                    ConfigStore.EnsureNasPasswordRemoved(_config);
+                if (passwordRemoved || persistedCopiesSanitized)
                 {
-                    ConfigStore.Save(_config);
                     Log.Write(
                         "credentials",
                         "NAS password removed after SSH key upload succeeded.");
@@ -234,7 +250,7 @@ namespace UbuntuWinShareClient
 
         private void WorkerDoWork(object sender, DoWorkEventArgs e)
         {
-            e.Result = SyncRunner.Run(_config);
+            e.Result = SyncRunner.Run(_config, _exitEvent);
         }
 
         private void WorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
@@ -370,7 +386,9 @@ namespace UbuntuWinShareClient
 
         private void OpenSettings(object sender, EventArgs e)
         {
-            using (SetupForm setup = new SetupForm(_config))
+            using (SetupForm setup = new SetupForm(
+                _config,
+                _exitEvent))
             {
                 if (setup.ShowDialog() == DialogResult.OK)
                 {
@@ -424,16 +442,14 @@ namespace UbuntuWinShareClient
 
         private void Uninstall(object sender, EventArgs e)
         {
-            DialogResult answer = MessageBox.Show(
-                "卸载会删除本机配置和开机启动项，不会删除 Ubuntu 或 NAS 上已经同步的文件。",
-                "卸载 Ubuntu Win Share",
-                MessageBoxButtons.OKCancel,
-                MessageBoxIcon.Warning);
-            if (answer != DialogResult.OK) return;
-
-            _tray.Visible = false;
-            SelfInstaller.Uninstall();
-            ExitThread();
+            if (!SelfInstaller.LaunchUninstaller())
+            {
+                MessageBox.Show(
+                    "无法启动独立卸载器，请重新运行安装包修复后再试。",
+                    "卸载 Ubuntu Win Share",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
         }
 
         private void Exit(object sender, EventArgs e)

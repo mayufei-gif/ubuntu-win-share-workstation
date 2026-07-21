@@ -30,6 +30,8 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 SCHEMA_VERSION = "1"
 PUBLIC_KEY_NAME = "nas-upload-public.xml"
 STATUS_FILE_NAME = ".ubuntu-win-sync-status.xml"
+SSH_CONNECT_ATTEMPTS = 3
+SSH_CONNECT_RETRY_SECONDS = 2
 
 
 class PermanentJobError(Exception):
@@ -133,10 +135,23 @@ def nas_public_line(key: paramiko.RSAKey) -> str:
     return f"{key.get_name()} {key.get_base64()} ubuntu-win-share-agent"
 
 
+def normalize_hosts(hosts: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for host in hosts:
+        value = host.strip()
+        key = value.lower()
+        if value and key not in seen:
+            ordered.append(value)
+            seen.add(key)
+    return ordered
+
+
 def initialize_runtime(
     share_root: Path,
     state_root: Path,
     allowed_hosts: list[str],
+    fallback_hosts: list[str],
     poll_seconds: int,
 ) -> dict[str, Any]:
     share_root = share_root.expanduser().resolve()
@@ -166,7 +181,8 @@ def initialize_runtime(
         "version": 1,
         "share_root": str(share_root),
         "state_root": str(state_root),
-        "allowed_hosts": sorted({host.strip() for host in allowed_hosts if host.strip()}),
+        "allowed_hosts": sorted(normalize_hosts(allowed_hosts), key=str.lower),
+        "fallback_hosts": normalize_hosts(fallback_hosts),
         "poll_seconds": max(5, int(poll_seconds)),
     }
     atomic_text(state_root / "config.json", json.dumps(config, indent=2) + "\n")
@@ -194,6 +210,75 @@ def load_ssh_lookup(host: str) -> dict[str, Any]:
 def host_fingerprint(key: paramiko.PKey) -> str:
     digest = hashlib.sha256(key.asbytes()).digest()
     return "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
+
+
+def new_ssh_client(known_hosts: Path) -> paramiko.SSHClient:
+    client = paramiko.SSHClient()
+    client.load_system_host_keys()
+    client.load_host_keys(str(known_hosts))
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    return client
+
+
+def connect_with_retry(
+    connect_once,
+    attempts: int = SSH_CONNECT_ATTEMPTS,
+    retry_seconds: int = SSH_CONNECT_RETRY_SECONDS,
+    sleep_fn=time.sleep,
+):
+    last_error: BaseException | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            return connect_once()
+        except (
+            paramiko.AuthenticationException,
+            paramiko.BadHostKeyException,
+        ):
+            raise
+        except (
+            paramiko.SSHException,
+            paramiko.ssh_exception.NoValidConnectionsError,
+            socket.timeout,
+            TimeoutError,
+            OSError,
+        ) as exc:
+            last_error = exc
+            if attempt >= max(1, attempts):
+                raise
+            sleep_fn(max(0, retry_seconds))
+    if last_error is not None:
+        raise last_error
+    raise TransientJobError("NAS SSH connection did not run.")
+
+
+def open_authenticated_client(
+    known_hosts: Path,
+    common: dict[str, Any],
+    attempts: int = SSH_CONNECT_ATTEMPTS,
+    **authentication,
+) -> tuple[paramiko.SSHClient, str]:
+    def connect_once() -> tuple[paramiko.SSHClient, str]:
+        client = new_ssh_client(known_hosts)
+        try:
+            client.connect(**common, **authentication)
+            transport = client.get_transport()
+            if (
+                transport is None
+                or not transport.is_active()
+                or not transport.is_authenticated()
+            ):
+                raise paramiko.SSHException(
+                    "NAS SSH session is not active and authenticated."
+                )
+            fingerprint = host_fingerprint(
+                transport.get_remote_server_key()
+            )
+            return client, fingerprint
+        except Exception:
+            client.close()
+            raise
+
+    return connect_with_retry(connect_once, attempts=attempts)
 
 
 def parse_job(path: Path) -> dict[str, Any]:
@@ -319,81 +404,100 @@ def decrypt_password(
         raise PermanentJobError("Unable to decrypt NAS credentials.") from exc
 
 
+def ordered_connection_hosts(
+    requested_host: str,
+    fallback_hosts: list[str],
+) -> list[str]:
+    return normalize_hosts([requested_host, *fallback_hosts])
+
+
 def connect_client(
     job: dict[str, Any],
     state_root: Path,
     password: str,
     allowed_hosts: list[str],
+    fallback_hosts: list[str],
 ) -> tuple[paramiko.SSHClient, str, bool, dict[str, Any]]:
     requested_host = job["nas_host"]
-    lookup = load_ssh_lookup(requested_host)
-    hostname = str(lookup.get("hostname", requested_host))
-    port = int(lookup.get("port", job["nas_port"]))
-    username = job["nas_username"] or str(lookup.get("user", ""))
-    identity_files = lookup.get("identityfile", [])
-    if isinstance(identity_files, str):
-        identity_files = [identity_files]
-    identity_files = [os.path.expanduser(item) for item in identity_files]
-
     allowed = {item.lower() for item in allowed_hosts}
-    if allowed and requested_host.lower() not in allowed and hostname.lower() not in allowed:
-        raise PermanentJobError("NAS host is not in the Ubuntu agent allowlist.")
-
     known_hosts = state_root / "known_hosts"
-    client = paramiko.SSHClient()
-    client.load_system_host_keys()
-    client.load_host_keys(str(known_hosts))
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
     nas_key, nas_key_path = load_or_create_nas_key(state_root)
-    connected_with_key = False
+    last_transient: BaseException | None = None
 
-    common = {
-        "hostname": hostname,
-        "port": port,
-        "username": username,
-        "timeout": 20,
-        "auth_timeout": 20,
-        "banner_timeout": 20,
-    }
+    for candidate_host in ordered_connection_hosts(requested_host, fallback_hosts):
+        lookup = load_ssh_lookup(candidate_host)
+        hostname = str(lookup.get("hostname", candidate_host))
+        port = int(lookup.get("port", job["nas_port"]))
+        username = job["nas_username"] or str(lookup.get("user", ""))
+        identity_files = lookup.get("identityfile", [])
+        if isinstance(identity_files, str):
+            identity_files = [identity_files]
+        identity_files = [os.path.expanduser(item) for item in identity_files]
 
-    try:
-        client.connect(
-            **common,
-            key_filename=[str(nas_key_path)] + identity_files,
-            allow_agent=True,
-            look_for_keys=True,
-        )
-        connected_with_key = True
-    except paramiko.AuthenticationException:
-        client.close()
-        if not password:
+        if allowed and (
+            candidate_host.lower() not in allowed and hostname.lower() not in allowed
+        ):
             raise PermanentJobError(
-                "NAS SSH key authentication failed and no password was supplied."
+                "NAS route is not in the Ubuntu agent allowlist: " + candidate_host
             )
-        client = paramiko.SSHClient()
-        client.load_system_host_keys()
-        client.load_host_keys(str(known_hosts))
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(
-            **common,
-            password=password,
-            allow_agent=False,
-            look_for_keys=False,
-        )
 
-    client.save_host_keys(str(known_hosts))
-    transport = client.get_transport()
-    if transport is None:
-        client.close()
-        raise TransientJobError("NAS SSH transport is unavailable.")
-    fingerprint = host_fingerprint(transport.get_remote_server_key())
-    connection = {
-        "hostname": hostname,
-        "port": port,
-        "username": username,
-    }
-    return client, fingerprint, connected_with_key, connection
+        common = {
+            "hostname": hostname,
+            "port": port,
+            "username": username,
+            "timeout": 20,
+            "auth_timeout": 20,
+            "banner_timeout": 20,
+        }
+        try:
+            client, fingerprint = open_authenticated_client(
+                known_hosts,
+                common,
+                attempts=1,
+                key_filename=[str(nas_key_path)] + identity_files,
+                allow_agent=True,
+                look_for_keys=True,
+            )
+            connected_with_key = True
+        except paramiko.AuthenticationException:
+            if not password:
+                raise PermanentJobError(
+                    "NAS SSH key authentication failed and no password was supplied."
+                )
+            client, fingerprint = open_authenticated_client(
+                known_hosts,
+                common,
+                attempts=1,
+                password=password,
+                allow_agent=False,
+                look_for_keys=False,
+            )
+            connected_with_key = False
+        except (
+            paramiko.SSHException,
+            paramiko.ssh_exception.NoValidConnectionsError,
+            socket.timeout,
+            TimeoutError,
+            OSError,
+        ) as exc:
+            last_transient = exc
+            continue
+
+        try:
+            client.save_host_keys(str(known_hosts))
+        except Exception:
+            client.close()
+            raise
+        connection = {
+            "hostname": hostname,
+            "port": port,
+            "username": username,
+        }
+        return client, fingerprint, connected_with_key, connection
+
+    if last_transient is not None:
+        raise last_transient
+    raise TransientJobError("No NAS connection routes are configured.")
 
 
 def install_nas_public_key_via_ssh(
@@ -689,6 +793,7 @@ def process_job(
             state_root,
             password,
             list(config.get("allowed_hosts", [])),
+            list(config.get("fallback_hosts", [])),
         )
         try:
             nas_key, _ = load_or_create_nas_key(state_root)
@@ -849,7 +954,13 @@ def self_test() -> int:
     try:
         share = root / "share"
         state = root / "state"
-        config = initialize_runtime(share, state, ["nas.example"], 10)
+        config = initialize_runtime(
+            share,
+            state,
+            ["nas.example", "192.168.1.10"],
+            ["192.168.1.10"],
+            10,
+        )
         private_key = load_or_create_encryption_key(state)
         secret = b"NAS_TEST_SECRET"
         cipher = private_key.public_key().encrypt(
@@ -872,8 +983,49 @@ def self_test() -> int:
             raise RuntimeError("RSA OAEP self-test failed.")
         if not (share / ".ubuntu-win-share" / "keys" / PUBLIC_KEY_NAME).exists():
             raise RuntimeError("Public key was not published.")
-        if config["allowed_hosts"] != ["nas.example"]:
+        if config["allowed_hosts"] != ["192.168.1.10", "nas.example"]:
             raise RuntimeError("Agent config self-test failed.")
+        if config["fallback_hosts"] != ["192.168.1.10"]:
+            raise RuntimeError("Agent fallback config self-test failed.")
+        if ordered_connection_hosts("nas.example", ["192.168.1.10", "NAS.EXAMPLE"]) != [
+            "nas.example",
+            "192.168.1.10",
+        ]:
+            raise RuntimeError("NAS route ordering self-test failed.")
+        attempts = {"count": 0}
+
+        def transient_connect():
+            attempts["count"] += 1
+            if attempts["count"] < 3:
+                raise paramiko.SSHException("No existing session")
+            return "connected"
+
+        if connect_with_retry(
+            transient_connect,
+            attempts=3,
+            retry_seconds=0,
+        ) != "connected":
+            raise RuntimeError("SSH transient retry self-test failed.")
+        if attempts["count"] != 3:
+            raise RuntimeError("SSH transient retry count is incorrect.")
+
+        auth_attempts = {"count": 0}
+
+        def rejected_connect():
+            auth_attempts["count"] += 1
+            raise paramiko.AuthenticationException("rejected")
+
+        try:
+            connect_with_retry(
+                rejected_connect,
+                attempts=3,
+                retry_seconds=0,
+            )
+            raise RuntimeError("SSH authentication failure was accepted.")
+        except paramiko.AuthenticationException:
+            pass
+        if auth_attempts["count"] != 1:
+            raise RuntimeError("SSH authentication failure was retried.")
         print("NAS_UPLOAD_AGENT_SELF_TEST_OK")
         return 0
     finally:
@@ -889,6 +1041,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--config")
     parser.add_argument("--allowed-host", action="append", default=[])
+    parser.add_argument("--fallback-host", action="append", default=[])
     parser.add_argument("--poll-seconds", type=int, default=15)
     parser.add_argument("--init", action="store_true")
     parser.add_argument("--once", action="store_true")
@@ -909,6 +1062,7 @@ def main() -> int:
             Path(args.share_root),
             state_root,
             args.allowed_host,
+            args.fallback_host,
             args.poll_seconds,
         )
         print("NAS_UPLOAD_AGENT_INIT_OK")

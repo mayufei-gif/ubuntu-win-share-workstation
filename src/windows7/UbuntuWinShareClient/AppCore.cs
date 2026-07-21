@@ -13,6 +13,14 @@ using System.Xml.Serialization;
 
 namespace UbuntuWinShareClient
 {
+    internal static class AppSignals
+    {
+        public const string ClientMutexName =
+            "Local\\UbuntuWinShareClient.Singleton";
+        public const string ExitEventName =
+            "Local\\UbuntuWinShareClient.Exit";
+    }
+
     [Serializable]
     public sealed class AppConfig
     {
@@ -74,9 +82,51 @@ namespace UbuntuWinShareClient
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "UbuntuWinShare");
         public static readonly string InstalledExe = Path.Combine(Root, "UbuntuWinShare.exe");
+        public static readonly string UninstallerExe = Path.Combine(Root, "UbuntuWinShareUninstaller.exe");
         public static readonly string ConfigFile = Path.Combine(Root, "config.dat");
+        public static readonly string ConfigBackupFile = Path.Combine(Root, "config.dat.bak");
         public static readonly string LogFile = Path.Combine(Root, "client.log");
         public static readonly string DiagnosticsFile = Path.Combine(Root, "diagnostics.txt");
+    }
+
+    internal static class SecureXml
+    {
+        public static XmlReader CreateReader(Stream stream)
+        {
+            return XmlReader.Create(stream, CreateSettings());
+        }
+
+        public static XmlDocument LoadDocument(string path)
+        {
+            XmlDocument document = new XmlDocument();
+            document.XmlResolver = null;
+            using (XmlReader reader = XmlReader.Create(path, CreateSettings()))
+            {
+                document.Load(reader);
+            }
+            return document;
+        }
+
+        public static string LoadRsaPublicKeyXml(string path)
+        {
+            XmlDocument document = LoadDocument(path);
+            XmlElement root = document.DocumentElement;
+            if (root == null || root.Name != "RSAKeyValue")
+            {
+                throw new InvalidOperationException(
+                    "Ubuntu upload agent public key is invalid.");
+            }
+            return root.OuterXml;
+        }
+
+        private static XmlReaderSettings CreateSettings()
+        {
+            XmlReaderSettings settings = new XmlReaderSettings();
+            settings.ProhibitDtd = true;
+            settings.XmlResolver = null;
+            settings.CloseInput = false;
+            return settings;
+        }
     }
 
     internal static class ConfigStore
@@ -86,19 +136,66 @@ namespace UbuntuWinShareClient
 
         public static bool Exists
         {
-            get { return File.Exists(AppPaths.ConfigFile); }
+            get
+            {
+                return File.Exists(AppPaths.ConfigFile) ||
+                       File.Exists(AppPaths.ConfigBackupFile);
+            }
         }
 
         public static AppConfig Load()
         {
-            if (!File.Exists(AppPaths.ConfigFile))
+            return LoadFromFiles(
+                AppPaths.ConfigFile,
+                AppPaths.ConfigBackupFile,
+                true);
+        }
+
+        internal static AppConfig LoadFromFiles(
+            string configPath,
+            string backupPath,
+            bool writeLog)
+        {
+            AppConfig config = TryLoad(configPath, writeLog);
+            if (config != null)
+            {
+                return config;
+            }
+
+            config = TryLoad(backupPath, writeLog);
+            if (config != null)
+            {
+                try
+                {
+                    RestoreBackup(configPath, backupPath);
+                    if (writeLog)
+                    {
+                        Log.Write(
+                            "config-load",
+                            "主配置损坏，已从 .bak 恢复。");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (writeLog)
+                    {
+                        Log.Write("config-restore", ex);
+                    }
+                }
+            }
+            return config;
+        }
+
+        private static AppConfig TryLoad(string path, bool writeLog)
+        {
+            if (!File.Exists(path))
             {
                 return null;
             }
 
             try
             {
-                byte[] encrypted = File.ReadAllBytes(AppPaths.ConfigFile);
+                byte[] encrypted = File.ReadAllBytes(path);
                 byte[] plain = ProtectedData.Unprotect(
                     encrypted,
                     Entropy,
@@ -107,8 +204,9 @@ namespace UbuntuWinShareClient
                 {
                     XmlSerializer serializer = new XmlSerializer(typeof(AppConfig));
                     using (MemoryStream stream = new MemoryStream(plain))
+                    using (XmlReader reader = SecureXml.CreateReader(stream))
                     {
-                        AppConfig config = (AppConfig)serializer.Deserialize(stream);
+                        AppConfig config = (AppConfig)serializer.Deserialize(reader);
                         Normalize(config);
                         return config;
                     }
@@ -120,15 +218,86 @@ namespace UbuntuWinShareClient
             }
             catch (Exception ex)
             {
-                Log.Write("config-load", ex);
+                if (writeLog)
+                {
+                    Log.Write(
+                        "config-load",
+                        path + ": " + ErrorText.Safe(ex));
+                }
                 return null;
             }
         }
 
         public static void Save(AppConfig config)
         {
+            SaveToFiles(
+                config,
+                AppPaths.ConfigFile,
+                AppPaths.ConfigBackupFile);
+        }
+
+        public static bool EnsureNasPasswordRemoved(AppConfig config)
+        {
+            bool rewrite =
+                NeedsNasPasswordSanitization(AppPaths.ConfigFile) ||
+                NeedsNasPasswordSanitization(AppPaths.ConfigBackupFile);
+            if (!rewrite)
+            {
+                return false;
+            }
+            SaveAfterNasPasswordRemovalToFiles(
+                config,
+                AppPaths.ConfigFile,
+                AppPaths.ConfigBackupFile);
+            return true;
+        }
+
+        internal static void SaveToFiles(
+            AppConfig config,
+            string configPath,
+            string backupPath)
+        {
+            SaveToFilesCore(
+                config,
+                configPath,
+                backupPath,
+                false);
+        }
+
+        internal static void SaveAfterNasPasswordRemovalToFiles(
+            AppConfig config,
+            string configPath,
+            string backupPath)
+        {
+            SaveToFilesCore(
+                config,
+                configPath,
+                backupPath,
+                true);
+        }
+
+        internal static bool NeedsNasPasswordSanitization(
+            string path)
+        {
+            AppConfig stored = TryLoad(path, false);
+            return stored == null ||
+                   !Text.IsBlank(stored.NasPassword);
+        }
+
+        private static void SaveToFilesCore(
+            AppConfig config,
+            string configPath,
+            string backupPath,
+            bool synchronizeBackupWithCurrent)
+        {
             Normalize(config);
-            Directory.CreateDirectory(AppPaths.Root);
+            string directory = Path.GetDirectoryName(configPath);
+            if (Text.IsBlank(directory))
+            {
+                throw new InvalidOperationException(
+                    "Configuration directory is missing.");
+            }
+            Directory.CreateDirectory(directory);
 
             byte[] plain;
             XmlSerializer serializer = new XmlSerializer(typeof(AppConfig));
@@ -144,17 +313,158 @@ namespace UbuntuWinShareClient
                     plain,
                     Entropy,
                     DataProtectionScope.CurrentUser);
-                string temporary = AppPaths.ConfigFile + ".tmp";
-                File.WriteAllBytes(temporary, encrypted);
-                if (File.Exists(AppPaths.ConfigFile))
+                try
                 {
-                    File.Delete(AppPaths.ConfigFile);
+                    if (synchronizeBackupWithCurrent)
+                    {
+                        ReplaceFileWithBytes(
+                            backupPath,
+                            encrypted);
+                        ReplaceFileWithBytes(
+                            configPath,
+                            encrypted);
+                        return;
+                    }
+
+                    string temporary = configPath + "." +
+                                       Guid.NewGuid().ToString("N") +
+                                       ".tmp";
+                    try
+                    {
+                        WriteBytesDurably(temporary, encrypted);
+                        if (File.Exists(configPath))
+                        {
+                            File.Replace(
+                                temporary,
+                                configPath,
+                                backupPath,
+                                true);
+                        }
+                        else
+                        {
+                            ReplaceFileWithBytes(
+                                backupPath,
+                                encrypted);
+                            File.Move(temporary, configPath);
+                        }
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            if (File.Exists(temporary))
+                            {
+                                File.Delete(temporary);
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+
                 }
-                File.Move(temporary, AppPaths.ConfigFile);
+                finally
+                {
+                    Array.Clear(encrypted, 0, encrypted.Length);
+                }
             }
             finally
             {
                 Array.Clear(plain, 0, plain.Length);
+            }
+        }
+
+        private static void ReplaceFileWithBytes(
+            string path,
+            byte[] bytes)
+        {
+            string temporary = path + "." +
+                               Guid.NewGuid().ToString("N") +
+                               ".tmp";
+            try
+            {
+                WriteBytesDurably(temporary, bytes);
+                if (File.Exists(path))
+                {
+                    File.Replace(
+                        temporary,
+                        path,
+                        null,
+                        true);
+                }
+                else
+                {
+                    File.Move(temporary, path);
+                }
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(temporary))
+                    {
+                        File.Delete(temporary);
+                    }
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private static void WriteBytesDurably(string path, byte[] bytes)
+        {
+            using (FileStream stream = new FileStream(
+                path,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None))
+            {
+                stream.Write(bytes, 0, bytes.Length);
+                stream.Flush();
+            }
+        }
+
+        private static void RestoreBackup(
+            string configPath,
+            string backupPath)
+        {
+            if (!File.Exists(backupPath))
+            {
+                return;
+            }
+
+            string temporary = configPath + "." +
+                               Guid.NewGuid().ToString("N") +
+                               ".restore";
+            try
+            {
+                File.Copy(backupPath, temporary, true);
+                if (File.Exists(configPath))
+                {
+                    File.Replace(
+                        temporary,
+                        configPath,
+                        null,
+                        true);
+                }
+                else
+                {
+                    File.Move(temporary, configPath);
+                }
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(temporary))
+                    {
+                        File.Delete(temporary);
+                    }
+                }
+                catch
+                {
+                }
             }
         }
 
@@ -426,6 +736,13 @@ namespace UbuntuWinShareClient
 
         public static ShareMapResult EnsureMapped(AppConfig config)
         {
+            return EnsureMapped(config, false);
+        }
+
+        public static ShareMapResult EnsureMapped(
+            AppConfig config,
+            bool forceReconnect)
+        {
             ShareMapResult result = new ShareMapResult();
             string drive = Text.NormalizeDrive(config.DriveLetter);
             string existing = GetRemoteName(drive);
@@ -440,7 +757,7 @@ namespace UbuntuWinShareClient
                     result.Message = drive + " 已被其它网络位置占用：" + existing;
                     return result;
                 }
-                if (Directory.Exists(config.ShareUnc))
+                if (!forceReconnect)
                 {
                     result.Success = true;
                     result.Message = drive + " -> " + config.ShareUnc;
@@ -450,7 +767,7 @@ namespace UbuntuWinShareClient
                 int cancelCode = WNetCancelConnection2(
                     drive,
                     ConnectUpdateProfile,
-                    false);
+                    true);
                 if (cancelCode != 0 && cancelCode != ErrorNotConnected)
                 {
                     result.Success = false;
@@ -521,6 +838,244 @@ namespace UbuntuWinShareClient
         public string Message;
     }
 
+    internal sealed class ProcessWaitResult
+    {
+        public bool Exited;
+        public bool Stopped;
+        public bool TimedOut;
+        public int ExitCode;
+    }
+
+    internal static class ProcessSupervisor
+    {
+        public static ProcessWaitResult Wait(
+            Process process,
+            WaitHandle stopSignal,
+            int timeoutMilliseconds)
+        {
+            ProcessWaitResult result = new ProcessWaitResult();
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(
+                timeoutMilliseconds);
+            while (!process.WaitForExit(250))
+            {
+                if (stopSignal != null &&
+                    stopSignal.WaitOne(0, false))
+                {
+                    result.Stopped = true;
+                    break;
+                }
+                if (DateTime.UtcNow >= deadline)
+                {
+                    result.TimedOut = true;
+                    break;
+                }
+            }
+
+            if (result.Stopped || result.TimedOut)
+            {
+                TryKillProcessTree(process);
+                result.Exited = process.WaitForExit(10000);
+            }
+            else
+            {
+                result.Exited = true;
+            }
+
+            if (result.Exited)
+            {
+                process.WaitForExit();
+                result.ExitCode = process.ExitCode;
+            }
+            else
+            {
+                result.ExitCode = -3;
+            }
+            return result;
+        }
+
+        private static void TryKillProcessTree(Process process)
+        {
+            try
+            {
+                if (process == null || process.HasExited)
+                {
+                    return;
+                }
+                string taskkill = Path.Combine(
+                    Environment.GetFolderPath(
+                        Environment.SpecialFolder.System),
+                    "taskkill.exe");
+                if (File.Exists(taskkill))
+                {
+                    ProcessStartInfo kill = new ProcessStartInfo();
+                    kill.FileName = taskkill;
+                    kill.Arguments = "/PID " + process.Id + " /T /F";
+                    kill.CreateNoWindow = true;
+                    kill.UseShellExecute = false;
+                    using (Process killer = Process.Start(kill))
+                    {
+                        killer.WaitForExit(10000);
+                    }
+                }
+                if (!process.HasExited)
+                {
+                    process.Kill();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Write("process-kill", ex);
+            }
+        }
+    }
+
+    internal static class SyncWorkerProtocol
+    {
+        public static void Write(string path, SyncResult result)
+        {
+            string temporary = path + "." +
+                               Guid.NewGuid().ToString("N") +
+                               ".tmp";
+            XmlWriterSettings settings = new XmlWriterSettings();
+            settings.Encoding = new UTF8Encoding(false);
+            settings.Indent = true;
+            try
+            {
+                using (XmlWriter writer = XmlWriter.Create(
+                    temporary,
+                    settings))
+                {
+                    writer.WriteStartElement("SyncResult");
+                    writer.WriteAttributeString("version", "1");
+                    writer.WriteElementString(
+                        "Success",
+                        result.Success ? "true" : "false");
+                    writer.WriteElementString(
+                        "Changed",
+                        result.Changed ? "true" : "false");
+                    writer.WriteElementString(
+                        "ExitCode",
+                        result.ExitCode.ToString(
+                            System.Globalization.CultureInfo.InvariantCulture));
+                    writer.WriteElementString(
+                        "Destination",
+                        result.Destination ?? "");
+                    writer.WriteElementString(
+                        "Message",
+                        result.Message ?? "");
+                    writer.WriteEndElement();
+                }
+                if (File.Exists(path))
+                {
+                    File.Replace(temporary, path, null, true);
+                }
+                else
+                {
+                    File.Move(temporary, path);
+                }
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(temporary))
+                    {
+                        File.Delete(temporary);
+                    }
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        public static SyncResult Read(string path)
+        {
+            XmlDocument document = SecureXml.LoadDocument(path);
+            XmlElement root = document.DocumentElement;
+            if (root == null ||
+                root.Name != "SyncResult" ||
+                root.GetAttribute("version") != "1")
+            {
+                throw new InvalidOperationException(
+                    "Unsupported sync worker result.");
+            }
+
+            SyncResult result = new SyncResult();
+            result.Success = string.Equals(
+                NodeText(root, "Success"),
+                "true",
+                StringComparison.OrdinalIgnoreCase);
+            result.Changed = string.Equals(
+                NodeText(root, "Changed"),
+                "true",
+                StringComparison.OrdinalIgnoreCase);
+            int exitCode;
+            if (!int.TryParse(
+                    NodeText(root, "ExitCode"),
+                    out exitCode))
+            {
+                throw new InvalidOperationException(
+                    "Invalid sync worker exit code.");
+            }
+            result.ExitCode = exitCode;
+            result.Destination = NodeText(root, "Destination");
+            result.Message = NodeText(root, "Message");
+            return result;
+        }
+
+        private static string NodeText(XmlElement root, string name)
+        {
+            XmlNode node = root.SelectSingleNode(name);
+            return node == null ? "" : node.InnerText;
+        }
+    }
+
+    internal static class SyncWorkerHost
+    {
+        public static int Run(
+            string resultPath,
+            bool forceReconnect)
+        {
+            SyncResult result = new SyncResult();
+            try
+            {
+                if (Text.IsBlank(resultPath))
+                {
+                    throw new InvalidOperationException(
+                        "Sync worker result path is missing.");
+                }
+                AppConfig config = ConfigStore.Load();
+                if (config == null)
+                {
+                    throw new InvalidOperationException(
+                        "Sync worker configuration is unavailable.");
+                }
+                result = SyncRunner.RunWorker(
+                    config,
+                    forceReconnect);
+            }
+            catch (Exception ex)
+            {
+                result.Success = false;
+                result.ExitCode = -4;
+                result.Message =
+                    "同步 worker 异常：" + ErrorText.Safe(ex);
+            }
+
+            try
+            {
+                SyncWorkerProtocol.Write(resultPath, result);
+            }
+            catch (Exception ex)
+            {
+                Log.Write("sync-worker-result", ex);
+                return 2;
+            }
+            return result.Success ? 0 : 1;
+        }
+    }
+
     internal static class SyncSchedule
     {
         public static bool ShouldStart(
@@ -553,6 +1108,9 @@ namespace UbuntuWinShareClient
 
     internal static class SyncRunner
     {
+        private const int DefaultTimeoutSeconds = 300;
+        private const int RetryCount = 1;
+
         public static string Destination(AppConfig config)
         {
             string machine = Text.SafeSegment(Environment.MachineName);
@@ -576,6 +1134,40 @@ namespace UbuntuWinShareClient
 
         public static SyncResult Run(AppConfig config)
         {
+            return Run(config, null);
+        }
+
+        public static SyncResult Run(
+            AppConfig config,
+            WaitHandle stopSignal)
+        {
+            SyncResult result = null;
+            int attempt;
+            for (attempt = 0; attempt <= RetryCount; attempt++)
+            {
+                bool forceReconnect = attempt > 0;
+                result = RunSupervised(
+                    config,
+                    stopSignal,
+                    forceReconnect);
+                if (result.Success ||
+                    result.ExitCode == -1 ||
+                    attempt == RetryCount)
+                {
+                    return result;
+                }
+                Log.Write(
+                    "sync-retry",
+                    "第一次同步失败，正在重建匹配映射后重试：" +
+                    result.Message);
+            }
+            return result;
+        }
+
+        internal static SyncResult RunWorker(
+            AppConfig config,
+            bool forceReconnect)
+        {
             SyncResult result = new SyncResult();
             result.Destination = Destination(config);
 
@@ -586,7 +1178,9 @@ namespace UbuntuWinShareClient
                 return result;
             }
 
-            ShareMapResult mapped = NetworkShare.EnsureMapped(config);
+            ShareMapResult mapped = NetworkShare.EnsureMapped(
+                config,
+                forceReconnect);
             if (!mapped.Success)
             {
                 result.Success = false;
@@ -621,13 +1215,38 @@ namespace UbuntuWinShareClient
             start.RedirectStandardError = true;
             start.WindowStyle = ProcessWindowStyle.Hidden;
 
+            Process process = null;
             try
             {
-                using (Process process = Process.Start(start))
+                process = Process.Start(start);
+                using (process)
                 {
-                    string output = process.StandardOutput.ReadToEnd();
-                    string error = process.StandardError.ReadToEnd();
+                    StringBuilder output = new StringBuilder();
+                    StringBuilder error = new StringBuilder();
+                    object outputLock = new object();
+                    object errorLock = new object();
+                    process.OutputDataReceived +=
+                        delegate(object sender, DataReceivedEventArgs e)
+                        {
+                            if (e.Data == null) return;
+                            lock (outputLock)
+                            {
+                                output.AppendLine(e.Data);
+                            }
+                        };
+                    process.ErrorDataReceived +=
+                        delegate(object sender, DataReceivedEventArgs e)
+                        {
+                            if (e.Data == null) return;
+                            lock (errorLock)
+                            {
+                                error.AppendLine(e.Data);
+                            }
+                        };
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
                     process.WaitForExit();
+
                     result.ExitCode = process.ExitCode;
                     result.Success = process.ExitCode < 8;
                     result.Changed =
@@ -636,7 +1255,9 @@ namespace UbuntuWinShareClient
                     result.Message = result.Success
                         ? "同步完成，robocopy=" + process.ExitCode
                         : "同步失败，robocopy=" + process.ExitCode + " " +
-                          (Text.IsBlank(error) ? output : error);
+                          (error.Length == 0
+                              ? output.ToString()
+                              : error.ToString());
                 }
             }
             catch (Exception ex)
@@ -650,6 +1271,101 @@ namespace UbuntuWinShareClient
                 WriteStatus(config, result);
             }
             return result;
+        }
+
+        private static SyncResult RunSupervised(
+            AppConfig config,
+            WaitHandle stopSignal,
+            bool forceReconnect)
+        {
+            SyncResult result = new SyncResult();
+            result.Destination = Destination(config);
+            string resultPath = Path.Combine(
+                Path.GetTempPath(),
+                "ubuntu-win-share-sync-" +
+                Guid.NewGuid().ToString("N") +
+                ".xml");
+            try
+            {
+                string executable = AppPaths.InstalledExe;
+                if (!File.Exists(executable))
+                {
+                    executable =
+                        Process.GetCurrentProcess().MainModule.FileName;
+                }
+
+                ProcessStartInfo start = new ProcessStartInfo();
+                start.FileName = executable;
+                start.Arguments =
+                    "--sync-worker --result " +
+                    QuoteArgument(resultPath) +
+                    (forceReconnect
+                        ? " --force-reconnect"
+                        : "");
+                start.CreateNoWindow = true;
+                start.UseShellExecute = false;
+                start.WindowStyle = ProcessWindowStyle.Hidden;
+
+                using (Process worker = Process.Start(start))
+                {
+                    ProcessWaitResult waited = ProcessSupervisor.Wait(
+                        worker,
+                        stopSignal,
+                        DefaultTimeoutSeconds * 1000);
+                    if (waited.Stopped)
+                    {
+                        result.ExitCode = -1;
+                        result.Message =
+                            "同步已因客户端退出而停止。";
+                        return result;
+                    }
+                    if (waited.TimedOut)
+                    {
+                        result.ExitCode = -2;
+                        result.Message =
+                            "同步超过 " +
+                            DefaultTimeoutSeconds +
+                            " 秒，已终止 worker 和 robocopy。";
+                        return result;
+                    }
+                    if (!waited.Exited)
+                    {
+                        result.ExitCode = -3;
+                        result.Message =
+                            "无法确认超时同步进程已经退出。";
+                        return result;
+                    }
+                }
+
+                if (!File.Exists(resultPath))
+                {
+                    result.ExitCode = -4;
+                    result.Message =
+                        "同步 worker 未生成结果文件。";
+                    return result;
+                }
+                return SyncWorkerProtocol.Read(resultPath);
+            }
+            catch (Exception ex)
+            {
+                result.ExitCode = -4;
+                result.Message =
+                    "无法运行同步 worker：" + ErrorText.Safe(ex);
+                return result;
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(resultPath))
+                    {
+                        File.Delete(resultPath);
+                    }
+                }
+                catch
+                {
+                }
+            }
         }
 
         private static string QuoteArgument(string value)
@@ -729,6 +1445,88 @@ namespace UbuntuWinShareClient
         }
     }
 
+    internal static class ConfigLifecycle
+    {
+        public static void ApplySettingsChange(
+            AppConfig previous,
+            AppConfig current)
+        {
+            if (previous == null || current == null)
+            {
+                return;
+            }
+
+            bool shareChanged = !SameIgnoreCase(
+                previous.ShareUnc,
+                current.ShareUnc);
+            bool syncIdentityChanged =
+                shareChanged ||
+                !SameIgnoreCase(
+                    previous.SourceFolder,
+                    current.SourceFolder) ||
+                !SameOrdinal(
+                    previous.ProfileName,
+                    current.ProfileName);
+            bool uploadTargetChanged =
+                syncIdentityChanged ||
+                previous.NasPort != current.NasPort ||
+                !SameIgnoreCase(
+                    previous.NasHost,
+                    current.NasHost) ||
+                !SameOrdinal(
+                    previous.NasUsername,
+                    current.NasUsername) ||
+                !SameOrdinal(
+                    previous.NasRemoteRoot,
+                    current.NasRemoteRoot) ||
+                !SameOrdinal(
+                    previous.NasPassword,
+                    current.NasPassword);
+
+            if (syncIdentityChanged)
+            {
+                current.InitialSyncCompleted = false;
+            }
+            if (uploadTargetChanged)
+            {
+                current.UploadPromptShown = false;
+                current.AutoUploadEnabled = false;
+                current.UploadPending = false;
+                current.LastQueuedJobId = "";
+                current.LastQueuedUtc = "";
+            }
+            if (shareChanged)
+            {
+                current.UploadPublicKeyFingerprint = "";
+            }
+        }
+
+        private static bool SameIgnoreCase(
+            string left,
+            string right)
+        {
+            return string.Equals(
+                Normalize(left),
+                Normalize(right),
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool SameOrdinal(
+            string left,
+            string right)
+        {
+            return string.Equals(
+                Normalize(left),
+                Normalize(right),
+                StringComparison.Ordinal);
+        }
+
+        private static string Normalize(string value)
+        {
+            return value == null ? "" : value.Trim();
+        }
+    }
+
     internal static class UploadQueue
     {
         private const string ControlDirectory = ".ubuntu-win-share";
@@ -771,8 +1569,7 @@ namespace UbuntuWinShareClient
                 return null;
             }
 
-            XmlDocument document = new XmlDocument();
-            document.Load(path);
+            XmlDocument document = SecureXml.LoadDocument(path);
             XmlElement root = document.DocumentElement;
             if (root == null || root.Name != "NasUploadResult")
             {
@@ -854,7 +1651,8 @@ namespace UbuntuWinShareClient
                     RSACryptoServiceProvider rsa = new RSACryptoServiceProvider();
                     try
                     {
-                        rsa.FromXmlString(File.ReadAllText(keyPath, Encoding.UTF8));
+                        rsa.FromXmlString(
+                            SecureXml.LoadRsaPublicKeyXml(keyPath));
                         byte[] encrypted = rsa.Encrypt(plain, true);
                         encryptedPassword = Convert.ToBase64String(encrypted);
                     }
