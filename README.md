@@ -63,11 +63,15 @@ same branch, commit, pull, push, and review workflow. See
 scripts/
   ubuntu/
     configure-samba-share.sh     Configure the Ubuntu Samba share.
+    inspect-tailscale-direct.sh  Inspect LAN, UDP, firewall, and relay state.
+    configure-tailscale-udp-firewall.sh
+                                  Apply or roll back the confirmed UFW rule.
     verify-share-path.sh         Verify the Ubuntu-side shared directory.
   windows/
     Map-UbuntuWinShare.ps1       Map the SMB share on Windows.
     Register-UbuntuWinShareTask.ps1
                                   Optional hidden logon remount task.
+    Test-TailscaleDirectPath.ps1 Verify direct/relay state and SMB reachability.
     Test-UbuntuWinShareSync.ps1  Windows-to-Ubuntu sync proof.
     Test-Windows7SameNasE2E.ps1  Non-installing two-round three-end verifier.
   windows7/
@@ -87,6 +91,7 @@ docs/
   github-desktop-workflow.md     Multi-user workflow.
   release-process.md             Versioning and release rules.
   sync-verification.md           Verification model and commands.
+  tailscale-direct-path.md       Bridged LAN and direct-path runbook.
 ```
 
 ## Safe Defaults

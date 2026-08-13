@@ -2,6 +2,12 @@
 
 ## 0.3.2 - Unreleased release candidate
 
+- Added read-only Ubuntu LAN/Tailscale inspection, confirmed-port UFW
+  apply/rollback, and Windows direct-path acceptance tooling.
+- Documented bridged networking, router mapping protocol order, IPv6,
+  direct-path evidence, and the rule that TCP 445 must never be exposed to the
+  public internet.
+
 - Added an allowlisted NAS LAN fallback route for Ubuntu uploads when the
   primary Tailscale NAS route has a transient transport failure.
   Authentication rejection and host-key mismatch remain terminal failures.
